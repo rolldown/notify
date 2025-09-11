@@ -89,7 +89,8 @@ pub use notify_types::debouncer_full::DebouncedEvent;
 use file_id::FileId;
 use notify::{
     event::{ModifyKind, RemoveKind, RenameMode},
-    Error, ErrorKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, WatcherKind,
+    Error, ErrorKind, Event, EventKind, PathsMut, RecommendedWatcher, RecursiveMode, Watcher,
+    WatcherKind,
 };
 
 /// The set of requirements for watcher debounce event handling functions.
@@ -605,6 +606,10 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
         self.watcher.unwatch(path.as_ref())?;
         self.remove_root(path);
         Ok(())
+    }
+
+    pub fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
+        self.watcher.paths_mut()
     }
 
     pub fn configure(&mut self, option: notify::Config) -> notify::Result<bool> {
