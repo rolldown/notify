@@ -6,7 +6,7 @@
 
 use super::event::*;
 use super::{Config, Error, EventHandler, RecursiveMode, Result, Watcher};
-use crate::{unbounded, Receiver, Sender};
+use crate::{unbounded, PathsMut, Receiver, Sender};
 use kqueue::{EventData, EventFilter, FilterFlag, Ident};
 use std::collections::HashMap;
 use std::env;
@@ -46,6 +46,7 @@ pub struct KqueueWatcher {
 
 enum EventLoopMsg {
     AddWatch(PathBuf, RecursiveMode, Sender<Result<()>>),
+    AddWatchMultiple(Vec<(PathBuf, RecursiveMode)>, Sender<Result<()>>),
     RemoveWatch(PathBuf, Sender<Result<()>>),
     Shutdown,
 }
@@ -132,6 +133,9 @@ impl EventLoop {
             match msg {
                 EventLoopMsg::AddWatch(path, recursive_mode, tx) => {
                     let _ = tx.send(self.add_watch(path, recursive_mode.is_recursive()));
+                }
+                EventLoopMsg::AddWatchMultiple(paths, tx) => {
+                    let _ = tx.send(self.add_watch_multiple(paths));
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
                     let _ = tx.send(self.remove_watch(path, false));
@@ -313,6 +317,30 @@ impl EventLoop {
         Ok(())
     }
 
+    fn add_watch_multiple(&mut self, paths: Vec<(PathBuf, RecursiveMode)>) -> Result<()> {
+        for (path, recursive_mode) in paths {
+            let is_recursive = recursive_mode.is_recursive();
+            // If the watch is not recursive, or if we determine (by stat'ing the path to get its
+            // metadata) that the watched path is not a directory, add a single path watch.
+            if !is_recursive || !metadata(&path).map_err(Error::io)?.is_dir() {
+                self.add_single_watch(path, false)?;
+            } else {
+                for entry in WalkDir::new(path)
+                    .follow_links(self.follow_symlinks)
+                    .into_iter()
+                {
+                    let entry = entry.map_err(map_walkdir_error)?;
+                    self.add_single_watch(entry.into_path(), is_recursive)?;
+                }
+            }
+        }
+
+        // Only make a single `kevent` syscall to add all the watches.
+        self.kqueue.watch()?;
+
+        Ok(())
+    }
+
     /// Adds a single watch to the kqueue.
     ///
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
@@ -374,6 +402,34 @@ fn map_walkdir_error(e: walkdir::Error) -> Error {
     }
 }
 
+struct KqueuePathsMut<'a> {
+    inner: &'a mut KqueueWatcher,
+    add_paths: Vec<(PathBuf, RecursiveMode)>,
+}
+impl<'a> KqueuePathsMut<'a> {
+    fn new(watcher: &'a mut KqueueWatcher) -> Self {
+        Self {
+            inner: watcher,
+            add_paths: Vec::new(),
+        }
+    }
+}
+impl PathsMut for KqueuePathsMut<'_> {
+    fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+        self.add_paths.push((path.to_owned(), recursive_mode));
+        Ok(())
+    }
+
+    fn remove(&mut self, path: &Path) -> Result<()> {
+        self.inner.unwatch_inner(path)
+    }
+
+    fn commit(self: Box<Self>) -> Result<()> {
+        let paths = self.add_paths;
+        self.inner.watch_multiple_inner(paths)
+    }
+}
+
 impl KqueueWatcher {
     fn from_event_handler(
         event_handler: Box<dyn EventHandler>,
@@ -396,6 +452,32 @@ impl KqueueWatcher {
         };
         let (tx, rx) = unbounded();
         let msg = EventLoopMsg::AddWatch(pb, recursive_mode, tx);
+
+        self.channel
+            .send(msg)
+            .map_err(|e| Error::generic(&e.to_string()))?;
+        self.waker
+            .wake()
+            .map_err(|e| Error::generic(&e.to_string()))?;
+        rx.recv()
+            .unwrap()
+            .map_err(|e| Error::generic(&e.to_string()))
+    }
+
+    fn watch_multiple_inner(&mut self, paths: Vec<(PathBuf, RecursiveMode)>) -> Result<()> {
+        let pbs = paths
+            .into_iter()
+            .map(|(path, recursive_mode)| {
+                if path.is_absolute() {
+                    Ok((path, recursive_mode))
+                } else {
+                    let p = env::current_dir().map_err(Error::io)?;
+                    Ok((p.join(path), recursive_mode))
+                }
+            })
+            .collect::<Result<Vec<(PathBuf, RecursiveMode)>>>()?;
+        let (tx, rx) = unbounded();
+        let msg = EventLoopMsg::AddWatchMultiple(pbs, tx);
 
         self.channel
             .send(msg)
@@ -438,6 +520,10 @@ impl Watcher for KqueueWatcher {
 
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
         self.watch_inner(path, recursive_mode)
+    }
+
+    fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
+        Box::new(KqueuePathsMut::new(self))
     }
 
     fn unwatch(&mut self, path: &Path) -> Result<()> {
