@@ -77,6 +77,7 @@ pub enum MetaEvent {
 struct WatchState {
     dir_handle: HANDLE,
     complete_sem: HANDLE,
+    count: usize,
 }
 
 struct ReadDirectoryChangesServer {
@@ -186,6 +187,10 @@ impl ReadDirectoryChangesServer {
                 (true, path.parent().unwrap().to_path_buf())
             }
         };
+        if let Some(ws) = self.watches.get_mut(&dir_target) {
+            ws.count += 1;
+            return Ok(path);
+        }
 
         let encoded_path: Vec<u16> = dir_target
             .as_os_str()
@@ -231,7 +236,7 @@ impl ReadDirectoryChangesServer {
             return Err(Error::generic("Failed to create semaphore for watch.").add_path(path));
         }
         let rd = ReadData {
-            dir: dir_target,
+            dir: dir_target.clone(),
             file: wf,
             complete_sem: semaphore,
             is_recursive,
@@ -239,15 +244,20 @@ impl ReadDirectoryChangesServer {
         let ws = WatchState {
             dir_handle: handle,
             complete_sem: semaphore,
+            count: 1,
         };
-        self.watches.insert(path.clone(), ws);
+        self.watches.insert(dir_target, ws);
         start_read(&rd, self.event_handler.clone(), handle, self.tx.clone());
         Ok(path)
     }
 
     fn remove_watch(&mut self, path: PathBuf) {
-        if let Some(ws) = self.watches.remove(&path) {
-            stop_watch(&ws, &self.meta_tx);
+        if let Some(ws) = self.watches.get_mut(&path) {
+            ws.count -= 1;
+            if ws.count == 0 {
+                let ws = self.watches.remove(&path).unwrap();
+                stop_watch(&ws, &self.meta_tx);
+            }
         }
     }
 
