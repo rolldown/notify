@@ -165,8 +165,13 @@ impl ReadDirectoryChangesServer {
     }
 
     fn add_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<PathBuf> {
+        let metadata = path.metadata();
         // path must exist and be either a file or directory
-        if !path.is_dir() && !path.is_file() {
+        if metadata
+            .as_ref()
+            .map(|m| !m.is_dir() && !m.is_file())
+            .unwrap_or(true)
+        {
             return Err(
                 Error::generic("Input watch path is neither a file nor a directory.")
                     .add_path(path),
@@ -174,7 +179,7 @@ impl ReadDirectoryChangesServer {
         }
 
         let (watching_file, dir_target) = {
-            if path.is_dir() {
+            if metadata.map(|m| m.is_dir()).unwrap_or(false) {
                 (false, path.clone())
             } else {
                 // emulate file watching by watching the parent directory
@@ -534,12 +539,6 @@ impl ReadDirectoryChangesWatcher {
             let p = env::current_dir().map_err(Error::io)?;
             p.join(path)
         };
-        // path must exist and be either a file or directory
-        if !pb.is_dir() && !pb.is_file() {
-            return Err(Error::generic(
-                "Input watch path is neither a file nor a directory.",
-            ));
-        }
         self.send_action_require_ack(Action::Watch(pb.clone(), recursive_mode), &pb)
     }
 
