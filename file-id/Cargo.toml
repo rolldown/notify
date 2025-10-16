@@ -1,5 +1,5 @@
 [package]
-name = "file-id"
+name = "rolldown-file-id"
 version = "0.2.3"
 description = "Utility for reading inode numbers (Linux, MacOS) and file IDs (Windows)"
 documentation = "https://docs.rs/notify"
@@ -12,6 +12,9 @@ rust-version.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
+
+[lib]
+name = "file_id"
 
 [[bin]]
 name = "file-id"

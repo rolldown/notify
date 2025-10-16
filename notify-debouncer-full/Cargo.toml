@@ -30,7 +30,7 @@ rolldown-notify.workspace = true
 rolldown-notify-types.workspace = true
 crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
-file-id.workspace = true
+rolldown-file-id.workspace = true
 walkdir.workspace = true
 log.workspace = true
 
