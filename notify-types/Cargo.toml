@@ -1,5 +1,5 @@
 [package]
-name = "notify-types"
+name = "rolldown-notify-types"
 version = "2.0.0"
 description = "Types used by the notify crate"
 documentation = "https://docs.rs/notify-types"
@@ -12,6 +12,9 @@ rust-version.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
+
+[lib]
+name  = "notify_types"
 
 [features]
 serialization-compat-6 = []

@@ -1,5 +1,5 @@
 [package]
-name = "notify-debouncer-mini"
+name = "rolldown-notify-debouncer-mini"
 version = "0.7.0"
 description = "notify mini debouncer for events"
 documentation = "https://docs.rs/notify-debouncer-mini"
@@ -12,18 +12,21 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[lib]
+name  = "notify_debouncer_mini"
+
 [features]
 default = ["macos_fsevent"]
-serde = ["notify-types/serde"]
-crossbeam-channel = ["dep:crossbeam-channel", "notify/crossbeam-channel"]
-flume = ["dep:flume", "notify/flume"]
-macos_fsevent = ["notify/macos_fsevent"]
-macos_kqueue = ["notify/macos_kqueue"]
-serialization-compat-6 = ["notify/serialization-compat-6"]
+serde = ["rolldown-notify-types/serde"]
+crossbeam-channel = ["dep:crossbeam-channel", "rolldown-notify/crossbeam-channel"]
+flume = ["dep:flume", "rolldown-notify/flume"]
+macos_fsevent = ["rolldown-notify/macos_fsevent"]
+macos_kqueue = ["rolldown-notify/macos_kqueue"]
+serialization-compat-6 = ["rolldown-notify/serialization-compat-6"]
 
 [dependencies]
-notify.workspace = true
-notify-types.workspace = true
+rolldown-notify.workspace = true
+rolldown-notify-types.workspace = true
 crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
 log.workspace = true

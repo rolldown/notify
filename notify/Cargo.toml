@@ -1,5 +1,5 @@
 [package]
-name = "notify"
+name = "rolldown-notify"
 version = "8.2.0"
 description = "Cross-platform filesystem notification library"
 documentation = "https://docs.rs/notify"
@@ -17,15 +17,18 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[lib]
+name  = "notify"
+
 [features]
 default = ["macos_fsevent"]
-serde = ["notify-types/serde"]
+serde = ["rolldown-notify-types/serde"]
 macos_kqueue = ["kqueue", "mio"]
 macos_fsevent = ["fsevent-sys"]
-serialization-compat-6 = ["notify-types/serialization-compat-6"]
+serialization-compat-6 = ["rolldown-notify-types/serialization-compat-6"]
 
 [dependencies]
-notify-types.workspace = true
+rolldown-notify-types.workspace = true
 crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
 libc.workspace = true
