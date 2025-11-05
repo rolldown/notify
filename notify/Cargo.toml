@@ -54,6 +54,7 @@ mio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+pretty_assertions.workspace = true
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 trash.workspace = true
