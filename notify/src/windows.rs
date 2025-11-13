@@ -1031,4 +1031,25 @@ pub mod tests {
         ])
         .ensure_no_tail();
     }
+
+    #[test]
+    fn upgrade_to_recursive() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("upgrade");
+        let deep = tmpdir.path().join("upgrade/deep");
+        let file = tmpdir.path().join("upgrade/deep/file");
+        std::fs::create_dir_all(&deep).expect("create_dir");
+
+        watcher.watch_nonrecursively(&path);
+        std::fs::File::create_new(&file).expect("create");
+        std::fs::remove_file(&file).expect("delete");
+
+        watcher.watch_recursively(&path);
+        std::fs::File::create_new(&file).expect("create");
+
+        rx.wait_ordered_exact([expected(&deep).modify_any(), expected(&file).create_any()])
+            .ensure_no_tail();
+    }
 }
