@@ -24,7 +24,7 @@ jobs:
           save-cache: ${{ github.ref_name == 'main' }}
           cache-key: warm
           components: clippy rustfmt
-          tools: typos-cli,cargo-deny,cargo-machete
+          tools: typos-cli,cargo-deny,cargo-shear
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -38,8 +38,8 @@ jobs:
       - name: Run cargo-deny
         run: cargo deny check
 
-      - name: Run cargo-machete
-        run: cargo machete
+      - name: Run cargo-shear
+        run: cargo shear
 
   # Test on multiple platforms with different Rust versions
   test:
