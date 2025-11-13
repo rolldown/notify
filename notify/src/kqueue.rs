@@ -543,7 +543,12 @@ impl Drop for KqueueWatcher {
     }
 }
 
+#[cfg(test)]
 mod tests {
+    use std::{error::Error, path::PathBuf};
+
+    use crate::{Config, KqueueWatcher, RecursiveMode, Watcher};
+
     #[test]
     fn test_remove_recursive() -> Result<(), Box<dyn Error>> {
         let path = PathBuf::from("src");
