@@ -534,8 +534,8 @@ unsafe fn callback_impl(
     _event_ids: *const fs::FSEventStreamEventId,     // const FSEventStreamEventId eventIds[]
 ) {
     let event_paths = event_paths as *const *const libc::c_char;
-    let info = unsafe { *(info as *const StreamContextInfo) };
-    let event_handler = &info.event_handler;
+    let info = info as *const StreamContextInfo;
+    let event_handler = &(unsafe { *info }).event_handler;
 
     for p in 0..num_events {
         let path = unsafe { CStr::from_ptr(*event_paths.add(p)) }
@@ -549,7 +549,7 @@ unsafe fn callback_impl(
         });
 
         let mut handle_event = false;
-        for (p, r) in &info.recursive_info {
+        for (p, r) in &(unsafe { *info }).recursive_info {
             if path.starts_with(p) {
                 if *r || &path == p {
                     handle_event = true;
