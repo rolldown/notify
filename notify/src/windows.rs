@@ -5,9 +5,9 @@
 //!
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
-use crate::{bounded, unbounded, BoundSender, Config, Receiver, Sender};
-use crate::{event::*, WatcherKind};
+use crate::{BoundSender, Config, Receiver, Sender, bounded, unbounded};
 use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
+use crate::{WatcherKind, event::*};
 use std::alloc;
 use std::collections::HashMap;
 use std::env;
@@ -24,18 +24,18 @@ use windows_sys::Win32::Foundation::{
     INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadDirectoryChangesW, FILE_ACTION_ADDED, FILE_ACTION_MODIFIED,
-    FILE_ACTION_REMOVED, FILE_ACTION_RENAMED_NEW_NAME, FILE_ACTION_RENAMED_OLD_NAME,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
-    FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME,
-    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY,
-    FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING,
-};
-use windows_sys::Win32::System::Threading::{
-    CreateSemaphoreW, ReleaseSemaphore, WaitForSingleObjectEx, INFINITE,
+    CreateFileW, FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED,
+    FILE_ACTION_RENAMED_NEW_NAME, FILE_ACTION_RENAMED_OLD_NAME, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES,
+    FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
+    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE,
+    FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    ReadDirectoryChangesW,
 };
 use windows_sys::Win32::System::IO::{CancelIo, OVERLAPPED};
+use windows_sys::Win32::System::Threading::{
+    CreateSemaphoreW, INFINITE, ReleaseSemaphore, WaitForSingleObjectEx,
+};
 
 const BUF_SIZE: u32 = 16384;
 
@@ -338,13 +338,16 @@ unsafe extern "system" fn handle_event(
     _bytes_written: u32,
     overlapped: *mut OVERLAPPED,
 ) {
-    let overlapped: Box<OVERLAPPED> = Box::from_raw(overlapped);
-    let request: Box<ReadDirectoryRequest> = Box::from_raw(overlapped.hEvent as *mut _);
+    let overlapped: Box<OVERLAPPED> = unsafe { Box::from_raw(overlapped) };
+    let request: Box<ReadDirectoryRequest> = unsafe { Box::from_raw(overlapped.hEvent as *mut _) };
+
+    let release_semaphore =
+        || unsafe { ReleaseSemaphore(request.data.complete_sem, 1, ptr::null_mut()) };
 
     match error_code {
         ERROR_OPERATION_ABORTED => {
             // received when dir is unwatched or watcher is shutdown; return and let overlapped/request get drop-cleaned
-            ReleaseSemaphore(request.data.complete_sem, 1, ptr::null_mut());
+            release_semaphore();
             return;
         }
         ERROR_ACCESS_DENIED => {
@@ -352,7 +355,7 @@ unsafe extern "system" fn handle_event(
             // If so, unwatch the directory and return, otherwise, continue to handle the event.
             if !request.data.dir.exists() {
                 request.unwatch();
-                ReleaseSemaphore(request.data.complete_sem, 1, ptr::null_mut());
+                release_semaphore();
                 return;
             }
         }
@@ -367,7 +370,7 @@ unsafe extern "system" fn handle_event(
                 error_code
             );
             request.unwatch();
-            ReleaseSemaphore(request.data.complete_sem, 1, ptr::null_mut());
+            release_semaphore();
             return;
         }
     }
@@ -387,15 +390,17 @@ unsafe extern "system" fn handle_event(
     // In Wine, FILE_NOTIFY_INFORMATION structs are packed placed in the buffer;
     // they are aligned to 16bit (WCHAR) boundary instead of 32bit required by FILE_NOTIFY_INFORMATION.
     // Hence, we need to use `read_unaligned` here to avoid UB.
-    let mut cur_entry = ptr::read_unaligned(cur_offset as *const FILE_NOTIFY_INFORMATION);
+    let mut cur_entry =
+        unsafe { ptr::read_unaligned(cur_offset as *const FILE_NOTIFY_INFORMATION) };
     loop {
         // filename length is size in bytes, so / 2
         let len = cur_entry.FileNameLength as usize / 2;
-        let encoded_path: &[u16] = slice::from_raw_parts(
-            cur_offset.offset(std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName) as isize)
-                as _,
-            len,
-        );
+        let encoded_path: &[u16] = unsafe {
+            slice::from_raw_parts(
+                cur_offset.add(std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName)) as _,
+                len,
+            )
+        };
         // prepend root to get a full path
         let path = request
             .data
@@ -463,8 +468,8 @@ unsafe extern "system" fn handle_event(
         if cur_entry.NextEntryOffset == 0 {
             break;
         }
-        cur_offset = cur_offset.offset(cur_entry.NextEntryOffset as isize);
-        cur_entry = ptr::read_unaligned(cur_offset as *const FILE_NOTIFY_INFORMATION);
+        cur_offset = unsafe { cur_offset.add(cur_entry.NextEntryOffset as usize) };
+        cur_entry = unsafe { ptr::read_unaligned(cur_offset as *const FILE_NOTIFY_INFORMATION) };
     }
 }
 
@@ -604,7 +609,7 @@ unsafe impl Sync for ReadDirectoryChangesWatcher {}
 pub mod tests {
     use tempfile::tempdir;
 
-    use crate::{test::*, ReadDirectoryChangesWatcher, RecursiveMode, Watcher};
+    use crate::{ReadDirectoryChangesWatcher, RecursiveMode, Watcher, test::*};
 
     use std::time::Duration;
 

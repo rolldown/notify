@@ -3,13 +3,13 @@
 //! Checks the `watch`ed paths periodically to detect changes. This implementation only uses
 //! Rust stdlib APIs and should work on all of the platforms it supports.
 
-use crate::{unbounded, Config, Error, EventHandler, Receiver, RecursiveMode, Sender, Watcher};
+use crate::{Config, Error, EventHandler, Receiver, RecursiveMode, Sender, Watcher, unbounded};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::Duration,
@@ -63,12 +63,12 @@ impl ScanEventHandler for () {
 use data::{DataBuilder, WatchData};
 mod data {
     use crate::{
-        event::{CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind},
         EventHandler,
+        event::{CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind},
     };
     use std::{
         cell::RefCell,
-        collections::{hash_map::RandomState, HashMap},
+        collections::{HashMap, hash_map::RandomState},
         fmt::{self, Debug},
         fs::{self, File, Metadata},
         hash::{BuildHasher, Hasher},
@@ -333,11 +333,7 @@ mod data {
         }
 
         fn dir_scan_depth(is_recursive: bool) -> usize {
-            if is_recursive {
-                usize::MAX
-            } else {
-                1
-            }
+            if is_recursive { usize::MAX } else { 1 }
         }
     }
 

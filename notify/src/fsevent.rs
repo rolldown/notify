@@ -16,7 +16,7 @@
 
 use crate::event::*;
 use crate::{
-    unbounded, Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, Watcher,
+    Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, Watcher, unbounded,
 };
 use fsevent_sys as fs;
 use fsevent_sys::core_foundation as cf;

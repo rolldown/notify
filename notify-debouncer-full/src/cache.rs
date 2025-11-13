@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use file_id::{get_file_id, FileId};
+use file_id::{FileId, get_file_id};
 use notify::RecursiveMode;
 use walkdir::WalkDir;
 
@@ -55,11 +55,7 @@ impl FileIdMap {
     }
 
     fn dir_scan_depth(is_recursive: bool) -> usize {
-        if is_recursive {
-            usize::MAX
-        } else {
-            1
-        }
+        if is_recursive { usize::MAX } else { 1 }
     }
 }
 

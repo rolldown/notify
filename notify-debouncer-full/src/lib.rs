@@ -72,8 +72,8 @@ use std::{
     collections::{BinaryHeap, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -88,9 +88,9 @@ pub use notify_types::debouncer_full::DebouncedEvent;
 
 use file_id::FileId;
 use notify::{
-    event::{ModifyKind, RemoveKind, RenameMode},
     Error, ErrorKind, Event, EventKind, PathsMut, RecommendedWatcher, RecursiveMode, Watcher,
     WatcherKind,
+    event::{ModifyKind, RemoveKind, RenameMode},
 };
 
 /// The set of requirements for watcher debounce event handling functions.
@@ -666,23 +666,25 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + S
     let stop_c = stop.clone();
     let thread = std::thread::Builder::new()
         .name("notify-rs debouncer loop".to_string())
-        .spawn(move || loop {
-            if stop_c.load(Ordering::Acquire) {
-                break;
-            }
-            std::thread::sleep(tick);
-            let send_data;
-            let errors;
-            {
-                let mut lock = data_c.lock().unwrap();
-                send_data = lock.debounced_events();
-                errors = lock.errors();
-            }
-            if !send_data.is_empty() {
-                event_handler.handle_event(Ok(send_data));
-            }
-            if !errors.is_empty() {
-                event_handler.handle_event(Err(errors));
+        .spawn(move || {
+            loop {
+                if stop_c.load(Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(tick);
+                let send_data;
+                let errors;
+                {
+                    let mut lock = data_c.lock().unwrap();
+                    send_data = lock.debounced_events();
+                    errors = lock.errors();
+                }
+                if !send_data.is_empty() {
+                    event_handler.handle_event(Ok(send_data));
+                }
+                if !errors.is_empty() {
+                    event_handler.handle_event(Err(errors));
+                }
             }
         })?;
 
@@ -762,10 +764,8 @@ fn sort_events(events: Vec<DebouncedEvent>) -> Vec<DebouncedEvent> {
             push_next = true;
         }
 
-        if push_next {
-            if let Some(event) = events.front() {
-                min_time_heap.push(Reverse((event.time, path)));
-            }
+        if push_next && let Some(event) = events.front() {
+            min_time_heap.push(Reverse((event.time, path)));
         }
     }
 
