@@ -17,10 +17,14 @@ jobs:
     name: Quality Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: oxc-project/setup-rust@cd82e1efec7fef815e2c23d296756f31c7cdc03d # v1.0.0
+        with:
+          save-cache: ${{ github.ref_name == 'main' }}
+          cache-key: warm
+          components: clippy rustfmt
+          tools: typos-cli,cargo-deny,cargo-machete
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -28,84 +32,40 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Install typos-cli
-        uses: taiki-e/install-action@v2
-        with:
-          tool: typos-cli
-
       - name: Check for typos
         run: typos
 
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
-
       - name: Run cargo-deny
         run: cargo deny check
-
-      - name: Install cargo-machete
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-machete
 
       - name: Run cargo-machete
         run: cargo machete
 
   # Test on multiple platforms with different Rust versions
   test:
-    name: Test ${{ matrix.os }} - ${{ matrix.rust }} ${{ matrix.features != '' && format('({0})', matrix.features) || '' }}
+    name: Test ${{ matrix.os }} - ${{ matrix.features != '' && format('({0})', matrix.features) || '' }}
     runs-on: ${{ matrix.os }}
     needs: quality
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        rust: [stable, nightly, 1.90.0]
         features: [""]
         include:
           # MacOS with fsevent
           - os: macos-latest
-            rust: stable
-            features: "--no-default-features --features macos_fsevent"
-          - os: macos-latest
-            rust: nightly
-            features: "--no-default-features --features macos_fsevent"
-          - os: macos-latest
-            rust: 1.90.0
             features: "--no-default-features --features macos_fsevent"
           # MacOS with kqueue
           - os: macos-latest
-            rust: stable
-            features: "--no-default-features --features macos_kqueue"
-          - os: macos-latest
-            rust: nightly
-            features: "--no-default-features --features macos_kqueue"
-          - os: macos-latest
-            rust: 1.90.0
             features: "--no-default-features --features macos_kqueue"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
-      - name: Remove rust-toolchain.toml (Unix)
-        if: runner.os != 'Windows'
-        run: rm -f rust-toolchain.toml
-
-      - name: Remove rust-toolchain.toml (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          if (Test-Path rust-toolchain.toml) {
-            Remove-Item -Path rust-toolchain.toml
-          }
-
-      - name: Install Rust ${{ matrix.rust }}
-        uses: dtolnay/rust-toolchain@master
+      - uses: oxc-project/setup-rust@cd82e1efec7fef815e2c23d296756f31c7cdc03d # v1.0.0
         with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+          save-cache: ${{ github.ref_name == 'main' }}
+          cache-key: warm
 
       - name: Build
         run: cargo build --verbose ${{ matrix.features }}
@@ -122,23 +82,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: quality
     steps:
-      - uses: actions/checkout@v4
+      - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
-      - name: Remove rust-toolchain.toml
-        run: rm -f rust-toolchain.toml
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: oxc-project/setup-rust@f03aedf4620c1d3aa169a2510e24787d362bbe0b # v1.0.8
         with:
-          targets: armv7-linux-androideabi, aarch64-linux-android
+          save-cache: ${{ github.ref_name == 'main' }}
+          cache-key: warm
+          tools: cargo-ndk
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-ndk
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-ndk
+      - name: Add Rust targets
+        run: |
+          rustup target add armv7-linux-androideabi
+          rustup target add aarch64-linux-android
 
       - name: Build for Android (arm64)
         run: cargo ndk --target aarch64-linux-android build --verbose
@@ -152,18 +107,15 @@ jobs:
   #   runs-on: ubuntu-latest
   #   needs: quality
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
-  #     - name: Remove rust-toolchain.toml
-  #       run: rm -f rust-toolchain.toml
-
-  #     - name: Install Rust
-  #       uses: dtolnay/rust-toolchain@nightly
+  #     - uses: oxc-project/setup-rust@f03aedf4620c1d3aa169a2510e24787d362bbe0b # v1.0.8
   #       with:
-  #         targets: wasm32-wasip2
+  #         save-cache: ${{ github.ref_name == 'main' }}
+  #         cache-key: warm
 
-  #     - name: Cache dependencies
-  #       uses: Swatinem/rust-cache@v2
+  #     - name: Add Rust target
+  #       run: rustup target add wasm32-wasip2
 
   #     - name: Build for WASI
   #       run: cargo build --target wasm32-wasip2 --verbose
