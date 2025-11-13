@@ -468,10 +468,11 @@ mod expect {
 
             self.received.push(event.clone());
 
-            if let Some(multiple_event) = &self.multiple_event {
-                if multiple_event.kind == event.kind && multiple_event.paths == event.paths {
-                    return;
-                }
+            if let Some(multiple_event) = &self.multiple_event
+                && multiple_event.kind == event.kind
+                && multiple_event.paths == event.paths
+            {
+                return;
             }
 
             if expected.is_none()
@@ -771,7 +772,7 @@ mod expect {
         };
     }
 
-    #[rustfmt::skip] // due to annoying macro invocations formatting 
+    #[rustfmt::skip] // due to annoying macro invocations formatting
     impl ExpectedEvent {
         pub fn add_path(mut self, path: impl AsRef<Path>) -> Self {
             self.push_path(path.as_ref().to_path_buf());
@@ -785,7 +786,7 @@ mod expect {
             }
         }
 
-        pub fn without_tracker(mut self) -> Self { 
+        pub fn without_tracker(mut self) -> Self {
             self.tracker = Some(None);
             self
         }
@@ -796,13 +797,13 @@ mod expect {
         }
 
         /// There may be more than one that kind of the event.
-        /// 
-        /// For instance, it helps you to merge "flaky" events, like "write" data: 
+        ///
+        /// For instance, it helps you to merge "flaky" events, like "write" data:
         /// one call may cause more than one event.
-        /// 
+        ///
         /// If a checker encounters that kind of an event, it stores the last received and
         /// compare it with the next ones
-        /// 
+        ///
         /// It **does not** affect PartialEq, it is external information
         pub fn multiple(mut self) -> Self {
             self.multiple = true;
@@ -810,7 +811,7 @@ mod expect {
         }
 
         /// There may be no event.
-        /// 
+        ///
         /// It **does not** affect PartialEq, it is external information
         pub fn optional(mut self) -> Self {
             self.optional = true;

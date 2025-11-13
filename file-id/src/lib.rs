@@ -195,25 +195,27 @@ unsafe fn get_file_info_ex(file: &fs::File) -> Result<FileId, io::Error> {
     use std::{mem, os::windows::prelude::*};
     use windows_sys::Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO},
+        Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
     };
 
-    let mut info: FILE_ID_INFO = mem::zeroed();
-    let ret = GetFileInformationByHandleEx(
-        file.as_raw_handle() as HANDLE,
-        FileIdInfo,
-        &mut info as *mut FILE_ID_INFO as _,
-        mem::size_of::<FILE_ID_INFO>() as u32,
-    );
+    unsafe {
+        let mut info: FILE_ID_INFO = mem::zeroed();
+        let ret = GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            &mut info as *mut FILE_ID_INFO as _,
+            mem::size_of::<FILE_ID_INFO>() as u32,
+        );
 
-    if ret == 0 {
-        return Err(io::Error::last_os_error());
-    };
+        if ret == 0 {
+            return Err(io::Error::last_os_error());
+        };
 
-    Ok(FileId::new_high_res(
-        info.VolumeSerialNumber,
-        u128::from_le_bytes(info.FileId.Identifier),
-    ))
+        Ok(FileId::new_high_res(
+            info.VolumeSerialNumber,
+            u128::from_le_bytes(info.FileId.Identifier),
+        ))
+    }
 }
 
 #[cfg(target_family = "windows")]
@@ -221,19 +223,21 @@ unsafe fn get_file_info(file: &fs::File) -> Result<FileId, io::Error> {
     use std::{mem, os::windows::prelude::*};
     use windows_sys::Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
+        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
     };
 
-    let mut info: BY_HANDLE_FILE_INFORMATION = mem::zeroed();
-    let ret = GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info);
-    if ret == 0 {
-        return Err(io::Error::last_os_error());
-    };
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = mem::zeroed();
+        let ret = GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info);
+        if ret == 0 {
+            return Err(io::Error::last_os_error());
+        };
 
-    Ok(FileId::new_low_res(
-        info.dwVolumeSerialNumber,
-        ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
-    ))
+        Ok(FileId::new_low_res(
+            info.dwVolumeSerialNumber,
+            ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
+        ))
+    }
 }
 
 #[cfg(target_family = "windows")]

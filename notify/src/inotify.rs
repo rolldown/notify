@@ -6,7 +6,7 @@
 
 use super::event::*;
 use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, Watcher};
-use crate::{bounded, unbounded, BoundSender, Receiver, Sender};
+use crate::{BoundSender, Receiver, Sender, bounded, unbounded};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use std::collections::HashMap;
@@ -64,14 +64,12 @@ fn add_watch_by_event(
     watches: &HashMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
     add_watches: &mut Vec<PathBuf>,
 ) {
-    if event.mask.contains(EventMask::ISDIR) {
-        if let Some(parent_path) = path.parent() {
-            if let Some(&(_, _, is_recursive, _)) = watches.get(parent_path) {
-                if is_recursive {
-                    add_watches.push(path.to_owned());
-                }
-            }
-        }
+    if event.mask.contains(EventMask::ISDIR)
+        && let Some(parent_path) = path.parent()
+        && let Some(&(_, _, is_recursive, _)) = watches.get(parent_path)
+        && is_recursive
+    {
+        add_watches.push(path.to_owned());
     }
 }
 
@@ -521,12 +519,11 @@ impl EventLoop {
 
 /// return `DirEntry` when it is a directory
 fn filter_dir(e: walkdir::Result<walkdir::DirEntry>) -> Option<walkdir::DirEntry> {
-    if let Ok(e) = e {
-        if let Ok(metadata) = e.metadata() {
-            if metadata.is_dir() {
-                return Some(e);
-            }
-        }
+    if let Ok(e) = e
+        && let Ok(metadata) = e.metadata()
+        && metadata.is_dir()
+    {
+        return Some(e);
     }
     None
 }
@@ -615,7 +612,7 @@ impl Drop for INotifyWatcher {
 mod tests {
     use std::{
         path::{Path, PathBuf},
-        sync::{atomic::AtomicBool, mpsc, Arc},
+        sync::{Arc, atomic::AtomicBool, mpsc},
         thread::{self, available_parallelism},
         time::Duration,
     };

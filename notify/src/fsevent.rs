@@ -16,7 +16,7 @@
 
 use crate::event::*;
 use crate::{
-    unbounded, Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, Watcher,
+    Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, Watcher, unbounded,
 };
 use fsevent_sys as fs;
 use fsevent_sys::core_foundation as cf;
@@ -262,7 +262,7 @@ extern "C" fn release_context(info: *const libc::c_void) {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     /// Indicates whether the run loop is waiting for an event.
     fn CFRunLoopIsWaiting(runloop: cf::CFRunLoopRef) -> cf::Boolean;
 }
@@ -535,30 +535,30 @@ unsafe fn callback_impl(
 ) {
     let event_paths = event_paths as *const *const libc::c_char;
     let info = info as *const StreamContextInfo;
-    let event_handler = &(*info).event_handler;
+    let event_handler = unsafe { &(*info).event_handler };
 
     for p in 0..num_events {
-        let path = CStr::from_ptr(*event_paths.add(p))
+        let path = unsafe { CStr::from_ptr(*event_paths.add(p)) }
             .to_str()
             .expect("Invalid UTF8 string.");
         let path = PathBuf::from(path);
 
-        let flag = *event_flags.add(p);
+        let flag = unsafe { *event_flags.add(p) };
         let flag = StreamFlags::from_bits(flag).unwrap_or_else(|| {
             panic!("Unable to decode StreamFlags: {}", flag);
         });
 
         let mut handle_event = false;
-        for (p, r) in &(*info).recursive_info {
+        for (p, r) in unsafe { &(*info).recursive_info } {
             if path.starts_with(p) {
                 if *r || &path == p {
                     handle_event = true;
                     break;
-                } else if let Some(parent_path) = path.parent() {
-                    if parent_path == p {
-                        handle_event = true;
-                        break;
-                    }
+                } else if let Some(parent_path) = path.parent()
+                    && parent_path == p
+                {
+                    handle_event = true;
+                    break;
                 }
             }
         }
