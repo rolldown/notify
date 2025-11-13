@@ -9,6 +9,7 @@ use crate::{BoundSender, Config, Receiver, Sender, bounded, unbounded};
 use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
 use crate::{WatcherKind, event::*};
 use std::alloc;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -16,6 +17,7 @@ use std::os::raw::c_void;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::rc::Rc;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -41,8 +43,8 @@ const BUF_SIZE: u32 = 16384;
 
 #[derive(Clone)]
 struct ReadData {
-    dir: PathBuf,          // directory that is being watched
-    file: Option<PathBuf>, // if a file is being watched, this is its full path
+    dir: PathBuf, // directory that is being watched
+    watches: Rc<RefCell<HashMap<PathBuf, RecursiveMode>>>,
     complete_sem: HANDLE,
     is_recursive: bool,
 }
@@ -68,12 +70,6 @@ enum Action {
     Configure(Config, BoundSender<Result<bool>>),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum MetaEvent {
-    SingleWatchComplete,
-    WatcherAwakened,
-}
-
 struct WatchState {
     dir_handle: HANDLE,
     complete_sem: HANDLE,
@@ -83,16 +79,15 @@ struct ReadDirectoryChangesServer {
     tx: Sender<Action>,
     rx: Receiver<Action>,
     event_handler: Arc<Mutex<dyn EventHandler>>,
-    meta_tx: Sender<MetaEvent>,
     cmd_tx: Sender<Result<PathBuf>>,
-    watches: HashMap<PathBuf, WatchState>,
+    watches: Rc<RefCell<HashMap<PathBuf, RecursiveMode>>>,
+    watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool)>,
     wakeup_sem: HANDLE,
 }
 
 impl ReadDirectoryChangesServer {
     fn start(
         event_handler: Arc<Mutex<dyn EventHandler>>,
-        meta_tx: Sender<MetaEvent>,
         cmd_tx: Sender<Result<PathBuf>>,
         wakeup_sem: HANDLE,
     ) -> Sender<Action> {
@@ -109,9 +104,9 @@ impl ReadDirectoryChangesServer {
                         tx,
                         rx: action_rx,
                         event_handler,
-                        meta_tx,
                         cmd_tx,
-                        watches: HashMap::new(),
+                        watches: Rc::new(RefCell::new(HashMap::new())),
+                        watch_handles: HashMap::new(),
                         wakeup_sem,
                     };
                     server.run();
@@ -128,14 +123,14 @@ impl ReadDirectoryChangesServer {
             while let Ok(action) = self.rx.try_recv() {
                 match action {
                     Action::Watch(path, recursive_mode) => {
-                        let res = self.add_watch(path, recursive_mode.is_recursive());
+                        let res = self.add_watch(path, recursive_mode);
                         let _ = self.cmd_tx.send(res);
                     }
                     Action::Unwatch(path) => self.remove_watch(path),
                     Action::Stop => {
                         stopped = true;
-                        for ws in self.watches.values() {
-                            stop_watch(ws, &self.meta_tx);
+                        for (ws, _) in self.watch_handles.values() {
+                            stop_watch(ws);
                         }
                         break;
                     }
@@ -151,10 +146,7 @@ impl ReadDirectoryChangesServer {
 
             unsafe {
                 // wait with alertable flag so that the completion routine fires
-                let waitres = WaitForSingleObjectEx(self.wakeup_sem, 100, 1);
-                if waitres == WAIT_OBJECT_0 {
-                    let _ = self.meta_tx.send(MetaEvent::WatcherAwakened);
-                }
+                WaitForSingleObjectEx(self.wakeup_sem, 100, 1);
             }
         }
 
@@ -164,7 +156,17 @@ impl ReadDirectoryChangesServer {
         }
     }
 
-    fn add_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<PathBuf> {
+    fn add_watch(&mut self, path: PathBuf, recursive_mode: RecursiveMode) -> Result<PathBuf> {
+        if let Some(existing) = self.watches.borrow().get(&path) {
+            let need_upgrade_to_recursive = match *existing {
+                RecursiveMode::Recursive => false,
+                RecursiveMode::NonRecursive => recursive_mode == RecursiveMode::Recursive,
+            };
+            if !need_upgrade_to_recursive {
+                return Ok(path);
+            }
+        }
+
         let metadata = path.metadata();
         // path must exist and be either a file or directory
         if metadata
@@ -187,11 +189,29 @@ impl ReadDirectoryChangesServer {
             }
         };
 
-        let encoded_path: Vec<u16> = dir_target
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
+        self.add_watch_raw(dir_target, recursive_mode.is_recursive(), watching_file)?;
+        self.watches
+            .borrow_mut()
+            .insert(path.clone(), recursive_mode);
+
+        Ok(path)
+    }
+
+    fn add_watch_raw(
+        &mut self,
+        path: PathBuf,
+        is_recursive: bool,
+        watching_file: bool,
+    ) -> Result<()> {
+        if let Some((ws, was_recursive)) = self.watch_handles.get(&path) {
+            let need_upgrade_to_recursive = !*was_recursive && is_recursive;
+            if !need_upgrade_to_recursive {
+                return Ok(());
+            }
+            stop_watch(ws);
+        }
+
+        let encoded_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let handle;
         unsafe {
             handle = CreateFileW(
@@ -217,11 +237,6 @@ impl ReadDirectoryChangesServer {
                 });
             }
         }
-        let wf = if watching_file {
-            Some(path.clone())
-        } else {
-            None
-        };
         // every watcher gets its own semaphore to signal completion
         let semaphore = unsafe { CreateSemaphoreW(ptr::null_mut(), 0, 1, ptr::null_mut()) };
         if semaphore.is_null() || semaphore == INVALID_HANDLE_VALUE {
@@ -231,8 +246,8 @@ impl ReadDirectoryChangesServer {
             return Err(Error::generic("Failed to create semaphore for watch.").add_path(path));
         }
         let rd = ReadData {
-            dir: dir_target,
-            file: wf,
+            dir: path.clone(),
+            watches: Rc::clone(&self.watches),
             complete_sem: semaphore,
             is_recursive,
         };
@@ -240,14 +255,30 @@ impl ReadDirectoryChangesServer {
             dir_handle: handle,
             complete_sem: semaphore,
         };
-        self.watches.insert(path.clone(), ws);
+        self.watch_handles.insert(path, (ws, is_recursive));
         start_read(&rd, self.event_handler.clone(), handle, self.tx.clone());
-        Ok(path)
+        Ok(())
     }
 
     fn remove_watch(&mut self, path: PathBuf) {
-        if let Some(ws) = self.watches.remove(&path) {
-            stop_watch(&ws, &self.meta_tx);
+        if self.watches.borrow_mut().remove(&path).is_some() {
+            if let Some((ws, _)) = self.watch_handles.remove(&path) {
+                stop_watch(&ws);
+            } else if let Some(parent_path) = path.parent()
+                && self.watches.borrow().get(parent_path).is_none()
+                && self
+                    .watches
+                    .borrow()
+                    .keys()
+                    .filter(|p| p.starts_with(parent_path))
+                    .count()
+                    == 0
+                && let Some((ws, _)) = self.watch_handles.remove(parent_path)
+            {
+                // if the parent path is not watched, the watch handle is used for the files under it
+                // if no files under it are watched anymore, we can stop the watch on the parent path
+                stop_watch(&ws);
+            }
         }
     }
 
@@ -257,7 +288,7 @@ impl ReadDirectoryChangesServer {
     }
 }
 
-fn stop_watch(ws: &WatchState, meta_tx: &Sender<MetaEvent>) {
+fn stop_watch(ws: &WatchState) {
     unsafe {
         let cio = CancelIo(ws.dir_handle);
         let ch = CloseHandle(ws.dir_handle);
@@ -269,7 +300,6 @@ fn stop_watch(ws: &WatchState, meta_tx: &Sender<MetaEvent>) {
         }
         CloseHandle(ws.complete_sem);
     }
-    let _ = meta_tx.send(MetaEvent::SingleWatchComplete);
 }
 
 fn start_read(
@@ -294,11 +324,7 @@ fn start_read(
         | FILE_NOTIFY_CHANGE_CREATION
         | FILE_NOTIFY_CHANGE_SECURITY;
 
-    let monitor_subdir = if request.data.file.is_none() && request.data.is_recursive {
-        1
-    } else {
-        0
-    };
+    let monitor_subdir = if request.data.is_recursive { 1 } else { 0 };
 
     unsafe {
         let overlapped = alloc::alloc_zeroed(alloc::Layout::new::<OVERLAPPED>()) as *mut OVERLAPPED;
@@ -409,10 +435,12 @@ unsafe extern "system" fn handle_event(
 
         // if we are watching a single file, ignore the event unless the path is exactly
         // the watched file
-        let skip = match request.data.file {
-            None => false,
-            Some(ref watch_path) => *watch_path != path,
-        };
+        let skip = !(request
+            .data
+            .watches
+            .borrow()
+            .contains_key(&request.data.dir)
+            || request.data.watches.borrow().contains_key(&path));
 
         if !skip {
             log::trace!(
@@ -484,7 +512,6 @@ pub struct ReadDirectoryChangesWatcher {
 impl ReadDirectoryChangesWatcher {
     pub fn create(
         event_handler: Arc<Mutex<dyn EventHandler>>,
-        meta_tx: Sender<MetaEvent>,
     ) -> Result<ReadDirectoryChangesWatcher> {
         let (cmd_tx, cmd_rx) = unbounded();
 
@@ -493,8 +520,7 @@ impl ReadDirectoryChangesWatcher {
             return Err(Error::generic("Failed to create wakeup semaphore."));
         }
 
-        let action_tx =
-            ReadDirectoryChangesServer::start(event_handler, meta_tx, cmd_tx, wakeup_sem);
+        let action_tx = ReadDirectoryChangesServer::start(event_handler, cmd_tx, wakeup_sem);
 
         Ok(ReadDirectoryChangesWatcher {
             tx: action_tx,
@@ -565,11 +591,8 @@ impl ReadDirectoryChangesWatcher {
 
 impl Watcher for ReadDirectoryChangesWatcher {
     fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
-        // create dummy channel for meta event
-        // TODO: determine the original purpose of this - can we remove it?
-        let (meta_tx, _) = unbounded();
         let event_handler = Arc::new(Mutex::new(event_handler));
-        Self::create(event_handler, meta_tx)
+        Self::create(event_handler)
     }
 
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
