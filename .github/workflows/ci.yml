@@ -43,7 +43,7 @@ jobs:
 
   # Test on multiple platforms with different Rust versions
   test:
-    name: Test ${{ matrix.os }} - ${{ matrix.features != '' && format('({0})', matrix.features) || '' }}
+    name: Test ${{ matrix.os }} ${{ matrix.features != '' && format('({0})', matrix.features) || '' }}
     runs-on: ${{ matrix.os }}
     needs: quality
     strategy:
