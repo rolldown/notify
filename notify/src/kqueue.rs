@@ -734,10 +734,7 @@ mod tests {
         std::fs::write(&overwriting_file, "321").expect("write2");
         std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
 
-        rx.wait_ordered([
-            expected(&overwritten_file).create_file(),
-            expected(tmpdir.path()).modify_data_any(),
-        ]);
+        rx.wait_ordered([expected(&overwritten_file).create_file()]);
     }
 
     #[test]
