@@ -25,7 +25,7 @@ criterion = "0.7.0"
 flume = "0.11.1"
 deser-hjson = "2.2.4"
 env_logger = "0.11.2"
-rolldown-file-id = { version = "0.2.3", path = "file-id" }
+rolldown-file-id = { version = "0.2.4", path = "file-id" }
 fsevent-sys = "4.0.0"
 futures = "0.3.30"
 inotify = { version = "0.11.0", default-features = false }
@@ -35,10 +35,10 @@ libc = "0.2.4"
 log = "0.4.17"
 mio = { version = "1.0", features = ["os-ext"] }
 web-time = "1.1.0"
-rolldown-notify = { version = "8.2.0", path = "notify" }
-rolldown-notify-debouncer-full = { version = "0.6.0", path = "notify-debouncer-full" }
-rolldown-notify-debouncer-mini = { version = "0.7.0", path = "notify-debouncer-mini" }
-rolldown-notify-types = { version = "2.0.0", path = "notify-types" }
+rolldown-notify = { version = "8.2.1", path = "notify" }
+rolldown-notify-debouncer-full = { version = "0.6.1", path = "notify-debouncer-full" }
+rolldown-notify-debouncer-mini = { version = "0.7.1", path = "notify-debouncer-mini" }
+rolldown-notify-types = { version = "2.0.1", path = "notify-types" }
 pretty_assertions = "1.3.0"
 rstest = "0.26.0"
 serde = { version = "1.0.89", features = ["derive"] }
