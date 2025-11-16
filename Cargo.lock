@@ -944,7 +944,7 @@ checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
 
 [[package]]
 name = "rolldown-file-id"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "serde",
  "tempfile",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify"
-version = "8.2.0"
+version = "8.2.1"
 dependencies = [
  "bitflags 2.10.0",
  "criterion",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-debouncer-full"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "crossbeam-channel",
  "deser-hjson",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-debouncer-mini"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "crossbeam-channel",
  "flume",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-types"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "insta",
  "rstest",
