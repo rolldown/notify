@@ -11,6 +11,8 @@ use crate::{WatcherKind, event::*};
 use std::alloc;
 use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::os::raw::c_void;
@@ -68,6 +70,8 @@ enum Action {
     Unwatch(PathBuf),
     Stop,
     Configure(Config, BoundSender<Result<bool>>),
+    #[cfg(test)]
+    GetWatchHandles(BoundSender<HashSet<PathBuf>>),
 }
 
 struct WatchState {
@@ -136,6 +140,11 @@ impl ReadDirectoryChangesServer {
                     }
                     Action::Configure(config, tx) => {
                         self.configure_raw_mode(config, tx);
+                    }
+                    #[cfg(test)]
+                    Action::GetWatchHandles(tx) => {
+                        let handles = self.watch_handles.keys().cloned().collect();
+                        tx.send(handles).unwrap();
                     }
                 }
             }
@@ -612,6 +621,13 @@ impl Watcher for ReadDirectoryChangesWatcher {
     fn kind() -> crate::WatcherKind {
         WatcherKind::ReadDirectoryChangesWatcher
     }
+
+    #[cfg(test)]
+    fn get_watch_handles(&self) -> HashSet<PathBuf> {
+        let (tx, rx) = bounded(1);
+        self.tx.send(Action::GetWatchHandles(tx)).unwrap();
+        rx.recv().unwrap()
+    }
 }
 
 impl Drop for ReadDirectoryChangesWatcher {
@@ -630,11 +646,9 @@ unsafe impl Sync for ReadDirectoryChangesWatcher {}
 
 #[cfg(test)]
 pub mod tests {
-    use tempfile::tempdir;
-
     use crate::{ReadDirectoryChangesWatcher, RecursiveMode, Watcher, test::*};
 
-    use std::time::Duration;
+    use std::{collections::HashSet, time::Duration};
 
     fn watcher() -> (TestWatcher<ReadDirectoryChangesWatcher>, Receiver) {
         channel()
@@ -642,7 +656,7 @@ pub mod tests {
 
     #[test]
     fn trash_dir() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
+        let dir = testdir();
         let child_dir = dir.path().join("child");
         std::fs::create_dir(&child_dir)?;
 
@@ -650,10 +664,18 @@ pub mod tests {
             // Do something with the event
         })?;
         watcher.watch(&child_dir, RecursiveMode::NonRecursive)?;
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([child_dir.clone()])
+        );
 
         trash::delete(&child_dir)?;
 
         watcher.watch(dir.path(), RecursiveMode::NonRecursive)?;
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([dir.to_path_buf()])
+        );
 
         Ok(())
     }
@@ -675,6 +697,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).create_any()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -690,6 +716,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).modify_any().multiple()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -707,6 +737,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).modify_any()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -727,6 +761,10 @@ pub mod tests {
             expected(&new_path).rename_to(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -742,6 +780,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&file).remove_any()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -756,6 +798,10 @@ pub mod tests {
         std::fs::remove_file(&file).expect("remove");
 
         rx.wait_ordered_exact([expected(&file).remove_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -780,6 +826,10 @@ pub mod tests {
             expected(&overwritten_file).rename_to(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -793,6 +843,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).create_any()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -810,6 +864,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).modify_any()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -830,6 +888,10 @@ pub mod tests {
             expected(&new_path).rename_to(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -845,6 +907,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).remove_any()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -868,6 +934,10 @@ pub mod tests {
             expected(&new_path2).rename_to(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -888,6 +958,7 @@ pub mod tests {
         let event = rx.recv();
         assert_eq!(event, expected(path).remove_any());
         rx.ensure_empty();
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
     }
 
     #[test]
@@ -916,6 +987,10 @@ pub mod tests {
             expected(&new_path).modify_any().multiple(),
             expected(&new_path).remove_any(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -940,6 +1015,10 @@ pub mod tests {
             expected(&new_path2).rename_to(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -977,6 +1056,10 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&path).modify_any().multiple()])
             .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -998,6 +1081,10 @@ pub mod tests {
 
         let events = rx.iter().collect::<Vec<_>>();
         assert!(events.is_empty(), "unexpected events: {events:#?}");
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([subdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -1030,6 +1117,10 @@ pub mod tests {
             expected(&nested9).create_any(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -1051,5 +1142,6 @@ pub mod tests {
 
         rx.wait_ordered_exact([expected(&deep).modify_any(), expected(&file).create_any()])
             .ensure_no_tail();
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([path]));
     }
 }
