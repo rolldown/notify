@@ -185,7 +185,7 @@ impl EventLoop {
                     let _ = tx.send(self.add_watch(path, recursive_mode));
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
-                    let _ = tx.send(self.remove_watch(path, false));
+                    let _ = tx.send(self.remove_watch(path));
                 }
                 EventLoopMsg::Shutdown => {
                     let _ = self.remove_all_watches();
@@ -418,7 +418,7 @@ impl EventLoop {
 
         for path in remove_watches {
             self.watches.remove(&path);
-            self.remove_watch(path, true).ok();
+            self.remove_maybe_recursive_watch(path, true).ok();
         }
 
         for (path, is_recursive, is_dir) in add_watches {
@@ -550,35 +550,42 @@ impl EventLoop {
         }
     }
 
-    fn remove_watch(&mut self, path: PathBuf, remove_recursive: bool) -> Result<()> {
+    fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found().add_path(path)),
             Some(recursive_mode) => {
-                if let Some(ref mut inotify) = self.inotify {
-                    let mut inotify_watches = inotify.watches();
-                    log::trace!("removing inotify watch: {}", path.display());
+                self.remove_maybe_recursive_watch(path, recursive_mode.is_recursive())?;
+            }
+        }
+        Ok(())
+    }
 
-                    if let Some((handle, _)) = self.watch_handles.remove_by_right(&path) {
-                        inotify_watches
-                            .remove(handle.clone())
-                            .map_err(|e| Error::io(e).add_path(path.clone()))?;
-                    }
+    fn remove_maybe_recursive_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<()> {
+        let Some(ref mut inotify) = self.inotify else {
+            return Ok(());
+        };
+        let mut inotify_watches = inotify.watches();
 
-                    if recursive_mode.is_recursive() || remove_recursive {
-                        let mut remove_list = Vec::new();
-                        for (w, p, _) in &self.watch_handles {
-                            if p.starts_with(&path) {
-                                inotify_watches
-                                    .remove(w.clone())
-                                    .map_err(|e| Error::io(e).add_path(p.into()))?;
-                                remove_list.push(w.clone());
-                            }
-                        }
-                        for w in remove_list {
-                            self.watch_handles.remove_by_left(&w);
-                        }
-                    }
+        log::trace!("removing inotify watch: {}", path.display());
+
+        if let Some((handle, _)) = self.watch_handles.remove_by_right(&path) {
+            inotify_watches
+                .remove(handle.clone())
+                .map_err(|e| Error::io(e).add_path(path.clone()))?;
+        }
+
+        if is_recursive {
+            let mut remove_list = Vec::new();
+            for (w, p, _) in &self.watch_handles {
+                if p.starts_with(&path) {
+                    inotify_watches
+                        .remove(w.clone())
+                        .map_err(|e| Error::io(e).add_path(p.into()))?;
+                    remove_list.push(w.clone());
                 }
+            }
+            for w in remove_list {
+                self.watch_handles.remove_by_left(&w);
             }
         }
         Ok(())
@@ -983,7 +990,7 @@ mod tests {
             expected(&file).modify_meta_any(),
             expected(&file).remove_file(),
         ]);
-        assert_eq!(watcher.get_watch_handles(), HashSet::from([file]));
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([]));
     }
 
     #[test]
@@ -1104,8 +1111,7 @@ mod tests {
         .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: can avoid watching path as it's deleted
-            HashSet::from([tmpdir.to_path_buf(), path])
+            HashSet::from([tmpdir.to_path_buf()])
         );
     }
 
