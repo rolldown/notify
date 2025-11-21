@@ -11,6 +11,8 @@ use crate::{BoundSender, Receiver, Sender, bounded, unbounded};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::env;
 use std::fs::metadata;
 use std::os::unix::io::AsRawFd;
@@ -54,6 +56,8 @@ enum EventLoopMsg {
     RemoveWatch(PathBuf, Sender<Result<()>>),
     Shutdown,
     Configure(Config, BoundSender<Result<bool>>),
+    #[cfg(test)]
+    GetWatchHandles(BoundSender<HashSet<PathBuf>>),
 }
 
 #[inline]
@@ -192,6 +196,15 @@ impl EventLoop {
                 }
                 EventLoopMsg::Configure(config, tx) => {
                     self.configure_raw_mode(config, tx);
+                }
+                #[cfg(test)]
+                EventLoopMsg::GetWatchHandles(tx) => {
+                    let handles: HashSet<PathBuf> = self
+                        .watch_handles
+                        .iter()
+                        .map(|(_, path, _)| path.clone())
+                        .collect();
+                    tx.send(handles).unwrap();
                 }
             }
         }
@@ -655,6 +668,16 @@ impl Watcher for INotifyWatcher {
     fn kind() -> crate::WatcherKind {
         crate::WatcherKind::Inotify
     }
+
+    #[cfg(test)]
+    fn get_watch_handles(&self) -> std::collections::HashSet<std::path::PathBuf> {
+        let (tx, rx) = bounded(1);
+        self.channel
+            .send(EventLoopMsg::GetWatchHandles(tx))
+            .unwrap();
+        self.waker.wake().unwrap();
+        rx.recv().unwrap()
+    }
 }
 
 impl Drop for INotifyWatcher {
@@ -668,6 +691,7 @@ impl Drop for INotifyWatcher {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashSet,
         path::{Path, PathBuf},
         sync::{Arc, atomic::AtomicBool, mpsc},
         thread::{self, available_parallelism},
@@ -839,6 +863,10 @@ mod tests {
             expected(&path).access_open_any(),
             expected(&path).access_close_write(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -858,6 +886,10 @@ mod tests {
             expected(&path).access_close_write(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -874,6 +906,10 @@ mod tests {
         file.set_permissions(permissions).expect("set_permissions");
 
         rx.wait_ordered_exact([expected(&path).modify_meta_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -896,6 +932,10 @@ mod tests {
         ])
         .ensure_trackers_len(1)
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -910,6 +950,10 @@ mod tests {
         std::fs::remove_file(&file).expect("remove");
 
         rx.wait_ordered_exact([expected(&file).remove_file()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -927,6 +971,7 @@ mod tests {
             expected(&file).modify_meta_any(),
             expected(&file).remove_file(),
         ]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([file]));
     }
 
     #[test]
@@ -952,10 +997,15 @@ mod tests {
             expected(&overwriting_file).access_close_write().multiple(),
             expected(&overwriting_file).rename_from(),
             expected(&overwritten_file).rename_to(),
-            expected([overwriting_file, overwritten_file]).rename_both(),
+            expected([&overwriting_file, &overwritten_file]).rename_both(),
         ])
         .ensure_no_tail()
         .ensure_trackers_len(1);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: can avoid watching overwritten_file as it's inside tmpdir
+            HashSet::from([tmpdir.to_path_buf(), overwritten_file])
+        );
     }
 
     #[test]
@@ -968,6 +1018,10 @@ mod tests {
         std::fs::create_dir(&path).expect("create");
 
         rx.wait_ordered_exact([expected(&path).create_folder()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), path])
+        );
     }
 
     #[test]
@@ -989,6 +1043,10 @@ mod tests {
             expected(&path).modify_meta_any(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), path])
+        );
     }
 
     #[test]
@@ -1008,9 +1066,13 @@ mod tests {
             expected(&path).access_open_any().optional(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
-            expected([path, new_path]).rename_both(),
+            expected([&path, &new_path]).rename_both(),
         ])
         .ensure_trackers_len(1);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), new_path])
+        );
     }
 
     #[test]
@@ -1029,6 +1091,11 @@ mod tests {
             expected(&path).remove_folder(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: can avoid watching path as it's deleted
+            HashSet::from([tmpdir.to_path_buf(), path])
+        );
     }
 
     #[test]
@@ -1056,6 +1123,10 @@ mod tests {
             expected([&new_path, &new_path2]).rename_both(),
         ])
         .ensure_trackers_len(2);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), new_path2])
+        );
     }
 
     #[test]
@@ -1078,6 +1149,7 @@ mod tests {
         assert_eq!(event, expected(path).rename_from());
         assert!(tracker.is_some(), "tracker is none: [event:#?]");
         rx.ensure_empty();
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
     }
 
     #[test]
@@ -1114,6 +1186,10 @@ mod tests {
             expected(&new_path).access_close_write(),
             expected(&new_path).remove_file(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -1143,6 +1219,10 @@ mod tests {
         ])
         .ensure_no_tail()
         .ensure_trackers_len(2);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -1164,6 +1244,10 @@ mod tests {
 
         assert_eq!(rx.recv(), expected(&path).modify_data_any());
         rx.ensure_empty();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -1184,6 +1268,7 @@ mod tests {
             expected(&path).access_close_write(),
         ])
         .ensure_no_tail();
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([path]));
     }
 
     #[test]
@@ -1206,6 +1291,10 @@ mod tests {
             expected(&file).access_close_write(),
         ])
         .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), subdir])
+        );
 
         // TODO: https://github.com/rolldown/notify/issues/8
         // watcher.watcher.unwatch(&subdir).expect("unwatch");
@@ -1243,6 +1332,7 @@ mod tests {
             expected(&file).modify_data_any().multiple(),
             expected(&file).access_close_write(),
         ]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([file]));
     }
 
     #[test]
@@ -1264,6 +1354,7 @@ mod tests {
 
         let events = rx.iter().collect::<Vec<_>>();
         assert!(events.is_empty(), "unexpected events: {events:#?}");
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
     }
 
     #[test]
@@ -1296,5 +1387,20 @@ mod tests {
             expected(&nested8).create_folder(),
             expected(&nested9).create_folder(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([
+                tmpdir.to_path_buf(),
+                nested1,
+                nested2,
+                nested3,
+                nested4,
+                nested5,
+                nested6,
+                nested7,
+                nested8,
+                nested9
+            ])
+        );
     }
 }
