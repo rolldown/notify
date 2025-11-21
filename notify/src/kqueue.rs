@@ -6,6 +6,8 @@
 
 use super::event::*;
 use super::{Config, Error, EventHandler, RecursiveMode, Result, Watcher};
+#[cfg(test)]
+use crate::{BoundSender, bounded};
 use crate::{ErrorKind, PathsMut, Receiver, Sender, unbounded};
 use kqueue::{EventData, EventFilter, FilterFlag, Ident};
 use std::collections::{HashMap, HashSet};
@@ -50,6 +52,8 @@ enum EventLoopMsg {
     AddWatchMultiple(Vec<(PathBuf, RecursiveMode)>, Sender<Result<()>>),
     RemoveWatch(PathBuf, Sender<Result<()>>),
     Shutdown,
+    #[cfg(test)]
+    GetWatchHandles(BoundSender<HashSet<PathBuf>>),
 }
 
 impl EventLoop {
@@ -145,6 +149,11 @@ impl EventLoop {
                 EventLoopMsg::Shutdown => {
                     self.running = false;
                     break;
+                }
+                #[cfg(test)]
+                EventLoopMsg::GetWatchHandles(tx) => {
+                    let handles = self.watch_handles.clone();
+                    tx.send(handles).unwrap();
                 }
             }
         }
@@ -595,6 +604,16 @@ impl Watcher for KqueueWatcher {
     fn kind() -> crate::WatcherKind {
         crate::WatcherKind::Kqueue
     }
+
+    #[cfg(test)]
+    fn get_watch_handles(&self) -> HashSet<std::path::PathBuf> {
+        let (tx, rx) = bounded(1);
+        self.channel
+            .send(EventLoopMsg::GetWatchHandles(tx))
+            .unwrap();
+        self.waker.wake().unwrap();
+        rx.recv().unwrap()
+    }
 }
 
 impl Drop for KqueueWatcher {
@@ -640,7 +659,12 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
 
-        rx.wait_unordered([expected(path).create_file()]);
+        rx.wait_unordered([expected(path.clone()).create_file()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: is it necessary to watch the `path` itself?
+            HashSet::from([tmpdir.to_path_buf(), path]),
+        );
     }
 
     #[test]
@@ -657,6 +681,11 @@ mod tests {
         std::fs::write(&path, b"123").expect("write");
 
         rx.wait_unordered([expected(&path).modify_data_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: is it necessary to watch the `path` itself?
+            HashSet::from([tmpdir.to_path_buf(), path]),
+        );
     }
 
     #[test]
@@ -673,6 +702,11 @@ mod tests {
         file.set_permissions(permissions).expect("set_permissions");
 
         rx.wait_unordered([expected(&path).modify_meta_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: is it necessary to watch the `path` itself?
+            HashSet::from([tmpdir.to_path_buf(), path]),
+        );
     }
 
     #[test]
@@ -688,7 +722,15 @@ mod tests {
 
         std::fs::rename(&path, &new_path).expect("rename");
 
-        rx.wait_unordered([expected(path).rename_any(), expected(new_path).create()]);
+        rx.wait_unordered([
+            expected(path).rename_any(),
+            expected(new_path.clone()).create(),
+        ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: is it necessary to watch the `new_path` itself?
+            HashSet::from([tmpdir.to_path_buf(), new_path]),
+        );
     }
 
     #[test]
@@ -704,6 +746,10 @@ mod tests {
 
         // kqueue reports a write event on the directory when a file is deleted
         rx.wait_unordered([expected(tmpdir.path()).modify_data_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()]),
+        );
     }
 
     #[test]
@@ -718,6 +764,7 @@ mod tests {
         std::fs::remove_file(&file).expect("remove");
 
         rx.wait_unordered([expected(file).remove_any()]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([]),);
     }
 
     #[test]
@@ -735,6 +782,8 @@ mod tests {
         std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
 
         rx.wait_ordered([expected(&overwritten_file).create_file()]);
+        // TODO: sometimes overwritten_file is also included in the watch handles. Is it necessary?
+        assert!(watcher.get_watch_handles().contains(&tmpdir.to_path_buf()));
     }
 
     #[test]
@@ -747,6 +796,10 @@ mod tests {
         std::fs::create_dir(&path).expect("create");
 
         rx.wait_unordered([expected(&path).create_folder()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), path]),
+        );
     }
 
     #[test]
@@ -763,6 +816,10 @@ mod tests {
         std::fs::set_permissions(&path, permissions).expect("set_permissions");
 
         rx.wait_unordered([expected(&path).modify_meta_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), path]),
+        );
     }
 
     #[test]
@@ -781,6 +838,10 @@ mod tests {
             expected(&new_path).create_folder(),
             expected(&path).rename_any(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), new_path]),
+        );
     }
 
     #[test]
@@ -795,6 +856,10 @@ mod tests {
         std::fs::remove_dir(&path).expect("remove");
 
         rx.wait_unordered([expected(path).remove_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()]),
+        );
     }
 
     #[test]
@@ -815,6 +880,10 @@ mod tests {
             expected(&path).rename_any(),
             expected(&new_path2).create_folder(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), new_path2]),
+        );
     }
 
     #[test]
@@ -833,6 +902,7 @@ mod tests {
         std::fs::rename(&path, &new_path).expect("rename");
 
         rx.wait_unordered([expected(path).rename_any()]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
     }
 
     #[test]
@@ -859,6 +929,8 @@ mod tests {
             expected(&file2).modify_data_any(),
             expected(tmpdir.path()).modify_data_any(),
         ]);
+        // TODO: sometimes `file2`, `new_path` are also included in the watch handles. Is it necessary?
+        assert!(watcher.get_watch_handles().contains(&tmpdir.to_path_buf()));
     }
 
     #[test]
@@ -881,6 +953,8 @@ mod tests {
             expected(&path).rename_any(),
             expected(&new_path2).create_file(),
         ]);
+        // TODO: sometimes `new_path1`, `new_path2` are also included in the watch handles. Is it necessary?
+        assert!(watcher.get_watch_handles().contains(&tmpdir.to_path_buf()));
     }
 
     #[test]
@@ -901,6 +975,11 @@ mod tests {
         .expect("set_time");
 
         rx.wait_unordered([expected(&path).modify_meta_any()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            // TODO: is it necessary to watch the `path` itself?
+            HashSet::from([tmpdir.to_path_buf(), path]),
+        );
     }
 
     #[test]
@@ -915,7 +994,8 @@ mod tests {
 
         std::fs::write(&path, b"123").expect("write");
 
-        rx.wait_unordered([expected(path).modify_data_any()]);
+        rx.wait_unordered([expected(path.clone()).modify_data_any()]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([path]),);
     }
 
     #[test]
@@ -935,7 +1015,8 @@ mod tests {
 
         std::fs::write(&hardlink, "123123").expect("write to the hard link");
 
-        rx.wait_unordered([expected(file).modify_data_any()]);
+        rx.wait_unordered([expected(file.clone()).modify_data_any()]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([file]),);
     }
 
     #[test]
@@ -968,5 +1049,20 @@ mod tests {
             expected(&nested8).create_folder(),
             expected(&nested9).create_folder(),
         ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([
+                tmpdir.to_path_buf(),
+                nested1,
+                nested2,
+                nested3,
+                nested4,
+                nested5,
+                nested6,
+                nested7,
+                nested8,
+                nested9
+            ])
+        );
     }
 }
