@@ -5,7 +5,7 @@ use std::{
     fmt::Debug,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::mpsc::{self},
+    sync::mpsc::{self, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
@@ -49,10 +49,15 @@ impl Receiver {
                         self.kind
                     ),
                 },
-                Err(e) => panic!(
-                    "Recv error: {e:?}. Watcher: {:?}. State: {state:#?}",
-                    self.kind
-                ),
+                Err(e) => {
+                    if matches!(e, RecvTimeoutError::Timeout) && state.remain.is_all_optional() {
+                        break;
+                    }
+                    panic!(
+                        "Recv error: {e:?}. Watcher: {:?}. State: {state:#?}",
+                        self.kind
+                    )
+                }
             }
         }
 
@@ -468,6 +473,10 @@ mod expect {
             self.remain.is_empty()
         }
 
+        pub fn is_all_optional(&self) -> bool {
+            self.remain.is_all_optional()
+        }
+
         pub fn check(&mut self, event: Event) {
             let expected = self.remain.expected(&event);
 
@@ -499,6 +508,8 @@ mod expect {
     pub trait ExpectedEvents: Debug + FromIterator<ExpectedEvent> {
         fn is_empty(&self) -> bool;
 
+        fn is_all_optional(&self) -> bool;
+
         /// Returns
         /// * None if the event is unexpected
         /// * Some(expected) if the event was matched with the expected one
@@ -514,6 +525,10 @@ mod expect {
     impl ExpectedEvents for Unordered {
         fn is_empty(&self) -> bool {
             self.0.is_empty()
+        }
+
+        fn is_all_optional(&self) -> bool {
+            self.0.iter().all(|(_, expected)| expected.is_optional())
         }
 
         fn expected(&mut self, event: &Event) -> Option<ExpectedEvent> {
@@ -540,6 +555,10 @@ mod expect {
     impl ExpectedEvents for Ordered {
         fn is_empty(&self) -> bool {
             self.0.is_empty()
+        }
+
+        fn is_all_optional(&self) -> bool {
+            self.0.iter().all(|expected| expected.is_optional())
         }
 
         fn expected(&mut self, event: &Event) -> Option<ExpectedEvent> {

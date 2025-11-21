@@ -182,7 +182,25 @@ impl EventLoop {
                         */
                         kqueue::Vnode::Delete => {
                             remove_watches.push(path.clone());
-                            Ok(Event::new(EventKind::Remove(RemoveKind::Any)).add_path(path))
+                            let remove_event = Event::new(EventKind::Remove(RemoveKind::Any))
+                                .add_path(path.clone());
+                            if let Ok(metadata) = path.metadata() {
+                                // delete event also happens when this file is overwritten by a rename
+                                // in that case, emit a create event for the new file
+                                let is_dir = metadata.is_dir();
+                                add_watches.push((path.clone(), is_dir));
+                                self.event_handler.handle_event(Ok(remove_event));
+                                Ok(Event::new(EventKind::Create(if is_dir {
+                                    CreateKind::Folder
+                                } else if metadata.is_file() {
+                                    CreateKind::File
+                                } else {
+                                    CreateKind::Other
+                                }))
+                                .add_path(path))
+                            } else {
+                                Ok(remove_event)
+                            }
                         }
 
                         // a write to a directory means that a new file was created in it, let's
@@ -198,12 +216,18 @@ impl EventLoop {
                                 })
                                 .map(|file| {
                                     if let Some(file) = file {
+                                        let metadata = file.metadata();
+                                        let is_dir = metadata
+                                            .as_ref()
+                                            .map(|m| m.is_dir())
+                                            .unwrap_or_default();
                                         // watch this new file
-                                        add_watches.push(file.clone());
+                                        add_watches.push((file.clone(), is_dir));
 
-                                        Event::new(EventKind::Create(if file.is_dir() {
+                                        Event::new(EventKind::Create(if is_dir {
                                             CreateKind::Folder
-                                        } else if file.is_file() {
+                                        } else if metadata.map(|m| m.is_file()).unwrap_or_default()
+                                        {
                                             CreateKind::File
                                         } else {
                                             CreateKind::Other
@@ -267,7 +291,7 @@ impl EventLoop {
                             // This is a expensive operation, as we recursive through all
                             // subdirectories.
                             remove_watches.push(path.clone());
-                            add_watches.push(path.clone());
+                            add_watches.push((path.clone(), true));
                             Ok(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path))
                         }
 
@@ -303,8 +327,8 @@ impl EventLoop {
             self.remove_maybe_recursive_watch(path, true).ok();
         }
 
-        for path in add_watches {
-            if let Err(err) = self.add_maybe_recursive_watch(path.clone(), true)
+        for (path, is_dir) in add_watches {
+            if let Err(err) = self.add_maybe_recursive_watch(path.clone(), true, is_dir)
                 && let ErrorKind::Io(err_kind) = err.kind
                 && err_kind.kind() == std::io::ErrorKind::NotFound
                 && err.paths.contains(&path)
@@ -352,17 +376,19 @@ impl EventLoop {
 
             // upgrade to recursive
             if metadata(&path).map_err(Error::io)?.is_dir() {
-                self.add_maybe_recursive_watch(path.clone(), true)?;
+                self.add_maybe_recursive_watch(path.clone(), true, true)?;
             }
             *self.watches.get_mut(&path).unwrap() = RecursiveMode::Recursive;
             return Ok(());
         }
 
+        let is_dir = metadata(&path).map_err(Error::io)?.is_dir();
         self.add_maybe_recursive_watch(
             path.clone(),
             // If the watch is not recursive, or if we determine (by stat'ing the path to get its
             // metadata) that the watched path is not a directory, add a single path watch.
-            recursive_mode.is_recursive() && metadata(&path).map_err(Error::io)?.is_dir(),
+            recursive_mode.is_recursive() && is_dir,
+            is_dir,
         )?;
 
         self.watches.insert(path, recursive_mode);
@@ -371,7 +397,12 @@ impl EventLoop {
     }
 
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
-    fn add_maybe_recursive_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<()> {
+    fn add_maybe_recursive_watch(
+        &mut self,
+        path: PathBuf,
+        is_recursive: bool,
+        is_dir: bool,
+    ) -> Result<()> {
         if is_recursive {
             for entry in WalkDir::new(&path)
                 .follow_links(self.follow_symlinks)
@@ -380,8 +411,15 @@ impl EventLoop {
                 let entry = entry.map_err(map_walkdir_error)?;
                 self.add_single_watch(entry.into_path())?;
             }
-        } else {
+        } else if is_dir {
             self.add_single_watch(path.clone())?;
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.filter_map(std::result::Result::ok) {
+                    self.add_single_watch(entry.path())?;
+                }
+            }
+        } else {
+            self.add_single_watch(path)?;
         }
         Ok(())
     }
@@ -659,10 +697,13 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
 
-        rx.wait_unordered([expected(path.clone()).create_file()]);
+        rx.wait_ordered_exact([
+            expected(&path).modify_meta_any().optional(),
+            expected(path.clone()).create_file(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: is it necessary to watch the `path` itself?
             HashSet::from([tmpdir.to_path_buf(), path]),
         );
     }
@@ -680,10 +721,13 @@ mod tests {
 
         std::fs::write(&path, b"123").expect("write");
 
-        rx.wait_unordered([expected(&path).modify_data_any()]);
+        rx.wait_ordered_exact([
+            expected(&path).modify_meta_any().optional(),
+            expected(&path).modify_data_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: is it necessary to watch the `path` itself?
             HashSet::from([tmpdir.to_path_buf(), path]),
         );
     }
@@ -701,10 +745,9 @@ mod tests {
         watcher.watch_recursively(&tmpdir);
         file.set_permissions(permissions).expect("set_permissions");
 
-        rx.wait_unordered([expected(&path).modify_meta_any()]);
+        rx.wait_ordered_exact([expected(&path).modify_meta_any()]);
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: is it necessary to watch the `path` itself?
             HashSet::from([tmpdir.to_path_buf(), path]),
         );
     }
@@ -722,13 +765,13 @@ mod tests {
 
         std::fs::rename(&path, &new_path).expect("rename");
 
-        rx.wait_unordered([
+        rx.wait_ordered_exact([
+            expected(&new_path).create_file(),
             expected(path).rename_any(),
-            expected(new_path.clone()).create(),
-        ]);
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: is it necessary to watch the `new_path` itself?
             HashSet::from([tmpdir.to_path_buf(), new_path]),
         );
     }
@@ -744,8 +787,11 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        // kqueue reports a write event on the directory when a file is deleted
-        rx.wait_unordered([expected(tmpdir.path()).modify_data_any()]);
+        rx.wait_ordered_exact([
+            expected(file).remove_any(),
+            expected(tmpdir.path()).modify_data_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()]),
@@ -763,7 +809,8 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_unordered([expected(file).remove_any()]);
+        rx.wait_ordered_exact([expected(file).remove_any()])
+            .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([]),);
     }
 
@@ -781,9 +828,25 @@ mod tests {
         std::fs::write(&overwriting_file, "321").expect("write2");
         std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
 
-        rx.wait_ordered([expected(&overwritten_file).create_file()]);
-        // TODO: sometimes overwritten_file is also included in the watch handles. Is it necessary?
-        assert!(watcher.get_watch_handles().contains(&tmpdir.to_path_buf()));
+        rx.wait_ordered([
+            // create for overwriting_file can be
+            // create_file or create_other and may be missing
+            expected(&overwriting_file)
+                .modify_data_any()
+                .optional()
+                .multiple(),
+            expected(&overwritten_file).create_file(),
+            expected(&overwriting_file).rename_any().optional(),
+            expected(&overwriting_file).remove_any().optional(),
+        ]);
+        assert!(
+            // overwriting_file is sometimes included
+            // this happens when the rename happens right before
+            // the pathname -> file descriptor resolution is done
+            watcher
+                .get_watch_handles()
+                .is_superset(&HashSet::from([tmpdir.to_path_buf(), overwritten_file]))
+        );
     }
 
     #[test]
@@ -795,7 +858,8 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create");
 
-        rx.wait_unordered([expected(&path).create_folder()]);
+        rx.wait_ordered_exact([expected(&path).create_folder()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf(), path]),
@@ -815,7 +879,8 @@ mod tests {
         watcher.watch_recursively(&tmpdir);
         std::fs::set_permissions(&path, permissions).expect("set_permissions");
 
-        rx.wait_unordered([expected(&path).modify_meta_any()]);
+        rx.wait_ordered_exact([expected(&path).modify_meta_any()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf(), path]),
@@ -834,10 +899,11 @@ mod tests {
         watcher.watch_recursively(&tmpdir);
         std::fs::rename(&path, &new_path).expect("rename");
 
-        rx.wait_ordered([
+        rx.wait_ordered_exact([
             expected(&new_path).create_folder(),
             expected(&path).rename_any(),
-        ]);
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf(), new_path]),
@@ -855,7 +921,12 @@ mod tests {
         watcher.watch_recursively(&tmpdir);
         std::fs::remove_dir(&path).expect("remove");
 
-        rx.wait_unordered([expected(path).remove_any()]);
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).modify_data_any().optional(),
+            expected(path).remove_any(),
+            expected(tmpdir.path()).modify_data_any().optional(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()]),
@@ -880,9 +951,13 @@ mod tests {
             expected(&path).rename_any(),
             expected(&new_path2).create_folder(),
         ]);
-        assert_eq!(
-            watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), new_path2]),
+        assert!(
+            // new_path is sometimes included
+            // this happens when the rename happens right before
+            // the pathname -> file descriptor resolution is done
+            watcher
+                .get_watch_handles()
+                .is_superset(&HashSet::from([tmpdir.to_path_buf(), new_path2]))
         );
     }
 
@@ -901,7 +976,11 @@ mod tests {
 
         std::fs::rename(&path, &new_path).expect("rename");
 
-        rx.wait_unordered([expected(path).rename_any()]);
+        rx.wait_ordered_exact([
+            expected(&subdir).modify_data_any(),
+            expected(path).rename_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
     }
 
@@ -922,15 +1001,20 @@ mod tests {
         std::fs::write(&new_path, b"1").expect("write 3");
         std::fs::remove_file(&new_path).expect("remove");
 
-        // NOTE: depending on timing, remove event may happen for file1 or new_path
-        // NOTE: depending on timing, create event may not happen for file1
-        // NOTE: depending on timing, create&remove event may not happen for new_path
-        rx.wait_unordered([
+        rx.wait_ordered([
             expected(&file2).modify_data_any(),
-            expected(tmpdir.path()).modify_data_any(),
+            expected(&new_path).create_file().optional(),
+            expected(&file1).rename_any().optional(),
+            expected(&new_path).remove_any().optional(),
         ]);
-        // TODO: sometimes `file2`, `new_path` are also included in the watch handles. Is it necessary?
-        assert!(watcher.get_watch_handles().contains(&tmpdir.to_path_buf()));
+        assert!(
+            // new_path is sometimes included
+            // this happens when the rename happens right before
+            // the pathname -> file descriptor resolution is done
+            watcher
+                .get_watch_handles()
+                .is_superset(&HashSet::from([tmpdir.to_path_buf(), file2]))
+        );
     }
 
     #[test]
@@ -948,13 +1032,26 @@ mod tests {
         std::fs::rename(&path, &new_path1).expect("rename1");
         std::fs::rename(&new_path1, &new_path2).expect("rename2");
 
-        // NOTE: depending on timing, rename & remove event may happen for new_path1
-        rx.wait_unordered([
-            expected(&path).rename_any(),
+        rx.wait_ordered([
+            // create for new_path1 can be
+            // create_file or create_other and may be missing
+            expected(&path).rename_any().optional(),
+            expected(&new_path1).remove_any().optional(),
             expected(&new_path2).create_file(),
-        ]);
-        // TODO: sometimes `new_path1`, `new_path2` are also included in the watch handles. Is it necessary?
-        assert!(watcher.get_watch_handles().contains(&tmpdir.to_path_buf()));
+            expected(&path).rename_any().optional(),
+            expected(&new_path1).rename_any().optional(),
+            expected(&new_path1).remove_any().optional(),
+            expected(&new_path2).create_file().optional(),
+        ])
+        .ensure_no_tail();
+        assert!(
+            // new_path1 is sometimes included
+            // this happens when the rename happens right before
+            // the pathname -> file descriptor resolution is done
+            watcher
+                .get_watch_handles()
+                .is_superset(&HashSet::from([tmpdir.to_path_buf(), new_path2]))
+        );
     }
 
     #[test]
@@ -974,10 +1071,10 @@ mod tests {
         )
         .expect("set_time");
 
-        rx.wait_unordered([expected(&path).modify_meta_any()]);
+        rx.wait_ordered_exact([expected(&path).modify_meta_any()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: is it necessary to watch the `path` itself?
             HashSet::from([tmpdir.to_path_buf(), path]),
         );
     }
@@ -994,7 +1091,11 @@ mod tests {
 
         std::fs::write(&path, b"123").expect("write");
 
-        rx.wait_unordered([expected(path.clone()).modify_data_any()]);
+        rx.wait_ordered_exact([
+            expected(&path).modify_meta_any().optional(),
+            expected(&path).modify_data_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([path]),);
     }
 
@@ -1015,7 +1116,11 @@ mod tests {
 
         std::fs::write(&hardlink, "123123").expect("write to the hard link");
 
-        rx.wait_unordered([expected(file.clone()).modify_data_any()]);
+        rx.wait_ordered_exact([
+            expected(&file).modify_meta_any().optional(),
+            expected(&file).modify_data_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([file]),);
     }
 
