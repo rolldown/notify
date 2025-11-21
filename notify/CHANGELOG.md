@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.2.3](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.2...rolldown-notify-v8.2.3) - 2025-11-21
+
+### Fixed
+
+- align the behavior of kqueue backend more with others ([#16](https://github.com/rolldown/notify/pull/16))
+
 ## [8.2.2](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.1...rolldown-notify-v8.2.2) - 2025-11-21
 
 ### Fixed
