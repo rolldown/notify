@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.2.2](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.1...rolldown-notify-v8.2.2) - 2025-11-21
+
+### Fixed
+
+- remove watch handles after file deletion for inotify ([#15](https://github.com/rolldown/notify/pull/15))
+- avoid watching file under a directory that is watched for inotify backend ([#14](https://github.com/rolldown/notify/pull/14))
+
+### Other
+
+- verify watch handles for kqueue ([#13](https://github.com/rolldown/notify/pull/13))
+- verify watch handles for Windows backend ([#12](https://github.com/rolldown/notify/pull/12))
+- verify watch handles for inotify ([#11](https://github.com/rolldown/notify/pull/11))
+- separate watch_handles from watchers for inotify backend ([#9](https://github.com/rolldown/notify/pull/9))
+
 ## [8.2.1](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.0...rolldown-notify-v8.2.1) - 2025-11-16
 
 ### Fixed

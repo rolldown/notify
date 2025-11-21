@@ -1,6 +1,6 @@
 [package]
 name = "rolldown-notify-debouncer-full"
-version = "0.6.1"
+version = "0.6.2"
 description = "notify event debouncer optimized for ease of use"
 documentation = "https://docs.rs/notify-debouncer-full"
 authors = ["Daniel Faust <hessijames@gmail.com>"]
