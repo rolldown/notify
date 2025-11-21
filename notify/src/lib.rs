@@ -220,6 +220,7 @@ pub mod windows;
 pub mod null;
 pub mod poll;
 
+mod bimap;
 mod config;
 mod error;
 
