@@ -63,11 +63,12 @@ enum EventLoopMsg {
 #[inline]
 fn add_watch_by_event(
     path: &PathBuf,
+    is_dir: bool,
     watches: &HashMap<PathBuf, RecursiveMode>,
-    add_watches: &mut Vec<(PathBuf, bool)>,
+    add_watches: &mut Vec<(PathBuf, bool, bool)>,
 ) {
     if let Some(recursive_mode) = watches.get(path) {
-        add_watches.push((path.to_owned(), recursive_mode.is_recursive()));
+        add_watches.push((path.to_owned(), recursive_mode.is_recursive(), is_dir));
         return;
     }
 
@@ -75,13 +76,13 @@ fn add_watch_by_event(
         return;
     };
     if let Some(recursive_mode) = watches.get(parent) {
-        add_watches.push((path.to_owned(), recursive_mode.is_recursive()));
+        add_watches.push((path.to_owned(), recursive_mode.is_recursive(), is_dir));
         return;
     }
 
     while let Some(parent) = parent.parent() {
         if let Some(RecursiveMode::Recursive) = watches.get(parent) {
-            add_watches.push((path.to_owned(), true));
+            add_watches.push((path.to_owned(), true, is_dir));
             return;
         }
     }
@@ -294,7 +295,8 @@ impl EventLoop {
                                         .add_path(path.clone()),
                                     );
                                 }
-                                add_watch_by_event(&path, &self.watches, &mut add_watches);
+                                let is_dir = event.mask.contains(EventMask::ISDIR);
+                                add_watch_by_event(&path, is_dir, &self.watches, &mut add_watches);
                             }
                             if event.mask.contains(EventMask::MOVE_SELF) {
                                 evs.push(
@@ -308,17 +310,16 @@ impl EventLoop {
                                 // - change prefix for further events
                             }
                             if event.mask.contains(EventMask::CREATE) {
+                                let is_dir = event.mask.contains(EventMask::ISDIR);
                                 evs.push(
-                                    Event::new(EventKind::Create(
-                                        if event.mask.contains(EventMask::ISDIR) {
-                                            CreateKind::Folder
-                                        } else {
-                                            CreateKind::File
-                                        },
-                                    ))
+                                    Event::new(EventKind::Create(if is_dir {
+                                        CreateKind::Folder
+                                    } else {
+                                        CreateKind::File
+                                    }))
                                     .add_path(path.clone()),
                                 );
-                                add_watch_by_event(&path, &self.watches, &mut add_watches);
+                                add_watch_by_event(&path, is_dir, &self.watches, &mut add_watches);
                             }
                             if event.mask.contains(EventMask::DELETE) {
                                 evs.push(
@@ -420,8 +421,9 @@ impl EventLoop {
             self.remove_watch(path, true).ok();
         }
 
-        for (path, is_recursive) in add_watches {
-            if let Err(add_watch_error) = self.add_maybe_recursive_watch(path, is_recursive, false)
+        for (path, is_recursive, is_dir) in add_watches {
+            if let Err(add_watch_error) =
+                self.add_maybe_recursive_watch(path, is_recursive, is_dir, false)
             {
                 // The handler should be notified if we have reached the limit.
                 // Otherwise, the user might expect that a recursive watch
@@ -450,17 +452,19 @@ impl EventLoop {
 
             // upgrade to recursive
             if metadata(&path).map_err(Error::io)?.is_dir() {
-                self.add_maybe_recursive_watch(path.clone(), true, true)?;
+                self.add_maybe_recursive_watch(path.clone(), true, true, true)?;
             }
             *self.watches.get_mut(&path).unwrap() = RecursiveMode::Recursive;
             return Ok(());
         }
 
+        let is_dir = metadata(&path).map_err(Error::io_watch)?.is_dir();
         self.add_maybe_recursive_watch(
             path.clone(),
             // If the watch is not recursive, or if we determine (by stat'ing the path to get its
             // metadata) that the watched path is not a directory, add a single path watch.
-            recursive_mode.is_recursive() && metadata(&path).map_err(Error::io)?.is_dir(),
+            recursive_mode.is_recursive() && is_dir,
+            is_dir,
             true,
         )?;
 
@@ -473,6 +477,7 @@ impl EventLoop {
         &mut self,
         path: PathBuf,
         is_recursive: bool,
+        is_dir: bool,
         mut watch_self: bool,
     ) -> Result<()> {
         if is_recursive {
@@ -481,19 +486,26 @@ impl EventLoop {
                 .into_iter()
                 .filter_map(filter_dir)
             {
-                self.add_single_watch(entry.into_path(), watch_self)?;
+                self.add_single_watch(entry.into_path(), true, watch_self)?;
                 watch_self = false;
             }
         } else {
-            self.add_single_watch(path.clone(), watch_self)?;
+            self.add_single_watch(path.clone(), is_dir, watch_self)?;
         }
         Ok(())
     }
 
-    fn add_single_watch(&mut self, path: PathBuf, watch_self: bool) -> Result<()> {
+    fn add_single_watch(&mut self, path: PathBuf, is_dir: bool, watch_self: bool) -> Result<()> {
         if let Some((_, &(old_watch_self, _))) = self.watch_handles.get_by_right(&path)
             // if upgrade to watch self is not needed
             && (old_watch_self || !watch_self)
+        {
+            return Ok(());
+        }
+
+        if !is_dir
+            && let Some(parent) = path.parent()
+            && self.watch_handles.get_by_right(parent).is_some()
         {
             return Ok(());
         }
@@ -1003,8 +1015,7 @@ mod tests {
         .ensure_trackers_len(1);
         assert_eq!(
             watcher.get_watch_handles(),
-            // TODO: can avoid watching overwritten_file as it's inside tmpdir
-            HashSet::from([tmpdir.to_path_buf(), overwritten_file])
+            HashSet::from([tmpdir.to_path_buf()])
         );
     }
 
