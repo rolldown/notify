@@ -1,6 +1,7 @@
 #![allow(dead_code)] // not all helpers are used for all targets
 
 use std::{
+    collections::HashSet,
     fmt::Debug,
     ops::Deref,
     path::{Path, PathBuf},
@@ -243,6 +244,10 @@ impl<W: Watcher> TestWatcher<W> {
             .watch(path, recursive_mode)
             .unwrap_or_else(|e| panic!("Unable to watch {:?}: {e:#?}", path))
     }
+
+    pub fn get_watch_handles(&self) -> HashSet<PathBuf> {
+        self.watcher.get_watch_handles()
+    }
 }
 
 /// Calls the provided closure
@@ -345,6 +350,10 @@ pub struct TestDir {
 impl TestDir {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn to_path_buf(&self) -> PathBuf {
+        self.path.to_path_buf()
     }
 }
 

@@ -16,6 +16,12 @@ impl<L, R, V> BiHashMap<L, R, V, RandomState> {
         Self::default()
     }
 
+    #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+    pub fn iter(&self) -> impl Iterator<Item = (&L, &R, &V)> {
+        self.left.iter().map(|(l, (r, v))| (l, r, v))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn clear(&mut self) {
         self.left.clear();
         self.right.clear();

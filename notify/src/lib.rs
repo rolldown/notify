@@ -165,6 +165,8 @@
 pub use config::{Config, RecursiveMode};
 pub use error::{Error, ErrorKind, Result};
 pub use notify_types::event::{self, Event, EventKind};
+#[cfg(test)]
+use std::collections::HashSet;
 use std::path::Path;
 
 pub(crate) type Receiver<T> = std::sync::mpsc::Receiver<T>;
@@ -402,6 +404,12 @@ pub trait Watcher {
     fn kind() -> WatcherKind
     where
         Self: Sized;
+
+    /// Get the list of watch handles that are currently being watched.
+    #[cfg(test)]
+    fn get_watch_handles(&self) -> HashSet<std::path::PathBuf> {
+        HashSet::default()
+    }
 }
 
 /// The recommended [`Watcher`] implementation for the current platform
