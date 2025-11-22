@@ -1,4 +1,4 @@
-use notify::{Config, PollWatcher, RecursiveMode, Watcher, poll::ScanEvent};
+use notify::{Config, PollWatcher, WatchMode, Watcher, poll::ScanEvent};
 use std::path::Path;
 
 // Example for the pollwatcher scan callback feature.
@@ -42,7 +42,7 @@ fn watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
 
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
-    watcher.watch(path.as_ref(), RecursiveMode::Recursive)?;
+    watcher.watch(path.as_ref(), WatchMode::recursive())?;
 
     for res in rx {
         match res {

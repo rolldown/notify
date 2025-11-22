@@ -3,7 +3,7 @@
 /// This example can't be demonstrated under windows, it might be relevant for network shares
 #[cfg(not(target_os = "windows"))]
 fn not_windows_main() -> notify::Result<()> {
-    use notify::{Config, PollWatcher, RecursiveMode, Watcher};
+    use notify::{Config, PollWatcher, Watcher};
     use std::path::Path;
     use std::time::Duration;
 
@@ -36,7 +36,9 @@ fn not_windows_main() -> notify::Result<()> {
     let mut watcher = PollWatcher::new(tx, config)?;
     for path in paths {
         // watch all paths
-        watcher.watch(&path, RecursiveMode::Recursive)?;
+
+        use notify::WatchMode;
+        watcher.watch(&path, WatchMode::recursive())?;
     }
     // print all events, never returns
     for res in rx {

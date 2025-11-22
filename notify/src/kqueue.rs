@@ -5,7 +5,7 @@
 //! pieces of kernel code termed filters.
 
 use super::event::*;
-use super::{Config, Error, EventHandler, RecursiveMode, Result, Watcher};
+use super::{Config, Error, EventHandler, RecursiveMode, Result, WatchMode, Watcher};
 #[cfg(test)]
 use crate::{BoundSender, bounded};
 use crate::{ErrorKind, PathsMut, Receiver, Sender, unbounded};
@@ -513,7 +513,7 @@ fn map_walkdir_error(e: walkdir::Error) -> Error {
 
 struct KqueuePathsMut<'a> {
     inner: &'a mut KqueueWatcher,
-    add_paths: Vec<(PathBuf, RecursiveMode)>,
+    add_paths: Vec<(PathBuf, WatchMode)>,
 }
 impl<'a> KqueuePathsMut<'a> {
     fn new(watcher: &'a mut KqueueWatcher) -> Self {
@@ -524,8 +524,8 @@ impl<'a> KqueuePathsMut<'a> {
     }
 }
 impl PathsMut for KqueuePathsMut<'_> {
-    fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.add_paths.push((path.to_owned(), recursive_mode));
+    fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        self.add_paths.push((path.to_owned(), watch_mode));
         Ok(())
     }
 
@@ -552,7 +552,7 @@ impl KqueueWatcher {
         Ok(KqueueWatcher { channel, waker })
     }
 
-    fn watch_inner(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         let pb = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -560,7 +560,7 @@ impl KqueueWatcher {
             p.join(path)
         };
         let (tx, rx) = unbounded();
-        let msg = EventLoopMsg::AddWatch(pb, recursive_mode, tx);
+        let msg = EventLoopMsg::AddWatch(pb, watch_mode.recursive_mode, tx);
 
         self.channel
             .send(msg)
@@ -573,15 +573,15 @@ impl KqueueWatcher {
             .map_err(|e| Error::generic(&e.to_string()))
     }
 
-    fn watch_multiple_inner(&mut self, paths: Vec<(PathBuf, RecursiveMode)>) -> Result<()> {
+    fn watch_multiple_inner(&mut self, paths: Vec<(PathBuf, WatchMode)>) -> Result<()> {
         let pbs = paths
             .into_iter()
-            .map(|(path, recursive_mode)| {
+            .map(|(path, watch_mode)| {
                 if path.is_absolute() {
-                    Ok((path, recursive_mode))
+                    Ok((path, watch_mode.recursive_mode))
                 } else {
                     let p = env::current_dir().map_err(Error::io)?;
-                    Ok((p.join(path), recursive_mode))
+                    Ok((p.join(path), watch_mode.recursive_mode))
                 }
             })
             .collect::<Result<Vec<(PathBuf, RecursiveMode)>>>()?;
@@ -627,8 +627,8 @@ impl Watcher for KqueueWatcher {
         Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_inner(path, recursive_mode)
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        self.watch_inner(path, watch_mode)
     }
 
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
@@ -678,7 +678,7 @@ mod tests {
         let path = PathBuf::from("src");
 
         let mut watcher = KqueueWatcher::new(|event| println!("{:?}", event), Config::default())?;
-        watcher.watch(&path, RecursiveMode::Recursive)?;
+        watcher.watch(&path, WatchMode::recursive())?;
         let result = watcher.unwatch(&path);
         assert!(
             result.is_ok(),

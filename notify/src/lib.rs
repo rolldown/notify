@@ -88,7 +88,7 @@
 //! For more examples visit the [examples folder](https://github.com/notify-rs/notify/tree/main/examples) in the repository.
 //!
 //! ```rust
-//! use notify::{Event, RecursiveMode, Result, Watcher};
+//! use notify::{Event, Result, WatchMode, Watcher};
 //! use std::{path::Path, sync::mpsc};
 //!
 //! fn main() -> Result<()> {
@@ -108,7 +108,7 @@
 //! #     target_os = "dragonfly",
 //! #     target_os = "netbsd")))]
 //! #     { // "." doesn't exist on BSD for some reason in CI
-//!     watcher.watch(Path::new("."), RecursiveMode::Recursive)?;
+//!     watcher.watch(Path::new("."), WatchMode::recursive())?;
 //! #     }
 //! #     #[cfg(any())]
 //! #     { // don't run this in doctests, it blocks forever
@@ -131,7 +131,7 @@
 //! all call the same event function. This can accommodate advanced behaviour or work around limits.
 //!
 //! ```rust
-//! # use notify::{RecursiveMode, Result, Watcher};
+//! # use notify::{Result, WatchMode, Watcher};
 //! # use std::path::Path;
 //! #
 //! # fn main() -> Result<()> {
@@ -151,8 +151,8 @@
 //! #     target_os = "dragonfly",
 //! #     target_os = "netbsd")))]
 //! #     { // "." doesn't exist on BSD for some reason in CI
-//! #     watcher1.watch(Path::new("."), RecursiveMode::Recursive)?;
-//! #     watcher2.watch(Path::new("."), RecursiveMode::Recursive)?;
+//! #     watcher1.watch(Path::new("."), WatchMode::recursive())?;
+//! #     watcher2.watch(Path::new("."), WatchMode::recursive())?;
 //! #     }
 //!       // dropping the watcher1/2 here (no loop etc) will end the program
 //! #
@@ -162,7 +162,7 @@
 
 #![deny(missing_docs)]
 
-pub use config::{Config, RecursiveMode};
+pub use config::{Config, RecursiveMode, TargetMode, WatchMode};
 pub use error::{Error, ErrorKind, Result};
 pub use notify_types::event::{self, Event, EventKind};
 #[cfg(test)]
@@ -314,7 +314,7 @@ pub enum WatcherKind {
 /// `Box<dyn PathsMut>` is created by [`Watcher::paths_mut`]. See its documentation for more.
 pub trait PathsMut {
     /// Add a new path to watch. See [`Watcher::watch`] for more.
-    fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()>;
+    fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()>;
 
     /// Remove a path from watching. See [`Watcher::unwatch`] for more.
     fn remove(&mut self, path: &Path) -> Result<()>;
@@ -338,20 +338,13 @@ pub trait Watcher {
         Self: Sized;
     /// Begin watching a new path.
     ///
-    /// If the `path` is a directory, `recursive_mode` will be evaluated. If `recursive_mode` is
+    /// If the `path` is a directory, `watch_mode.recursive_mode` will be evaluated. If `watch_mode.recursive_mode` is
     /// `RecursiveMode::Recursive` events will be delivered for all files in that tree. Otherwise
     /// only the directory and its immediate children will be watched.
     ///
-    /// If the `path` is a file, `recursive_mode` will be ignored and events will be delivered only
+    /// If the `path` is a file, `watch_mode.recursive_mode` will be ignored and events will be delivered only
     /// for the file.
-    ///
-    /// On some platforms, if the `path` is renamed or removed while being watched, behaviour may
-    /// be unexpected. See discussions in [#165] and [#166]. If less surprising behaviour is wanted
-    /// one may non-recursively watch the _parent_ directory as well and manage related events.
-    ///
-    /// [#165]: https://github.com/notify-rs/notify/issues/165
-    /// [#166]: https://github.com/notify-rs/notify/issues/166
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()>;
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()>;
 
     /// Stop watching a path.
     ///
@@ -368,14 +361,14 @@ pub trait Watcher {
     /// # Examples
     ///
     /// ```
-    /// # use notify::{Watcher, RecursiveMode, Result};
+    /// # use notify::{Watcher, WatchMode, Result};
     /// # use std::path::Path;
     /// # fn main() -> Result<()> {
     /// # let many_paths_to_add = vec![];
     /// let mut watcher = notify::recommended_watcher(|_event| { /* event handler */ })?;
     /// let mut watcher_paths = watcher.paths_mut();
     /// for path in many_paths_to_add {
-    ///     watcher_paths.add(path, RecursiveMode::Recursive)?;
+    ///     watcher_paths.add(path, WatchMode::recursive())?;
     /// }
     /// watcher_paths.commit()?;
     /// # Ok(())
@@ -384,8 +377,8 @@ pub trait Watcher {
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
         struct DefaultPathsMut<'a, T: ?Sized>(&'a mut T);
         impl<'a, T: Watcher + ?Sized> PathsMut for DefaultPathsMut<'a, T> {
-            fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-                self.0.watch(path, recursive_mode)
+            fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+                self.0.watch(path, watch_mode)
             }
             fn remove(&mut self, path: &Path) -> Result<()> {
                 self.0.unwatch(path)
@@ -478,7 +471,7 @@ mod tests {
         Config, Error, ErrorKind, Event, NullWatcher, PollWatcher, RecommendedWatcher,
         RecursiveMode, Result, Watcher, WatcherKind,
     };
-    use crate::test::*;
+    use crate::{config::WatchMode, test::*};
 
     #[test]
     fn test_object_safe() {
@@ -527,7 +520,7 @@ mod tests {
         // set up the watcher
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
-        watcher.watch(dir.path(), RecursiveMode::Recursive)?;
+        watcher.watch(dir.path(), WatchMode::recursive())?;
 
         // create a new file
         let file_path = dir.path().join("file.txt");
@@ -565,8 +558,8 @@ mod tests {
         // start watching a and b
         {
             let mut watcher_paths = watcher.paths_mut();
-            watcher_paths.add(&dir_a, RecursiveMode::Recursive)?;
-            watcher_paths.add(&dir_b, RecursiveMode::Recursive)?;
+            watcher_paths.add(&dir_a, WatchMode::recursive())?;
+            watcher_paths.add(&dir_b, WatchMode::recursive())?;
             watcher_paths.commit()?;
         }
 

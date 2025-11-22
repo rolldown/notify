@@ -2,7 +2,7 @@ use futures::{
     SinkExt, StreamExt,
     channel::mpsc::{Receiver, channel},
 };
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, RecommendedWatcher, WatchMode, Watcher};
 use std::path::Path;
 
 /// Async, futures channel based event watching
@@ -41,7 +41,7 @@ async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
 
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
-    watcher.watch(path.as_ref(), RecursiveMode::Recursive)?;
+    watcher.watch(path.as_ref(), WatchMode::recursive())?;
 
     while let Some(res) = rx.next().await {
         match res {

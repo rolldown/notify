@@ -34,7 +34,7 @@
 //!
 //!   // Add a path to be watched. All files and directories at that path and
 //!   // below will be monitored for changes.
-//!   debouncer.watcher().watch(Path::new("."), RecursiveMode::Recursive).unwrap();
+//!   debouncer.watcher().watch(Path::new("."), WatchMode::recursive()).unwrap();
 //!
 //!   // note that dropping the debouncer (as will happen here) also ends the debouncer
 //!   // thus this demo would need an endless loop to keep running
@@ -410,7 +410,7 @@ pub fn new_debouncer<F: DebounceEventHandler>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::RecursiveMode;
+    use notify::WatchMode;
     use std::fs;
     use tempfile::tempdir;
 
@@ -423,7 +423,7 @@ mod tests {
         let mut debouncer = new_debouncer(Duration::from_secs(1), tx)?;
         debouncer
             .watcher()
-            .watch(dir.path(), RecursiveMode::Recursive)?;
+            .watch(dir.path(), WatchMode::recursive())?;
 
         // create a new file
         let file_path = dir.path().join("file.txt");

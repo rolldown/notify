@@ -1,4 +1,4 @@
-use notify::RecursiveMode;
+use notify::WatchMode;
 use notify_debouncer_full::new_debouncer;
 use std::{path::Path, time::Duration};
 
@@ -26,7 +26,7 @@ fn watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
 
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
-    debouncer.watch(path.as_ref(), RecursiveMode::Recursive)?;
+    debouncer.watch(path.as_ref(), WatchMode::recursive())?;
 
     // print all events and errors
     for result in rx {
