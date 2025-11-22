@@ -80,11 +80,13 @@ fn add_watch_by_event(
         return;
     }
 
-    while let Some(parent) = parent.parent() {
+    let mut current = parent;
+    while let Some(parent) = current.parent() {
         if let Some(RecursiveMode::Recursive) = watches.get(parent) {
             add_watches.push((path.to_owned(), true, is_dir));
             return;
         }
+        current = parent;
     }
 }
 
@@ -885,6 +887,33 @@ mod tests {
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn create_file_nested_in_recursive_watch() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let nested1_dir = tmpdir.path().join("nested1");
+        let nested2_dir = nested1_dir.join("nested2");
+        std::fs::create_dir_all(&nested2_dir).expect("create_dir");
+
+        watcher.watch_recursively(&tmpdir);
+
+        let path = nested2_dir.join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        rx.wait_ordered_exact([
+            expected(&nested1_dir).access_open_any().optional(),
+            expected(&nested2_dir).access_open_any().optional(),
+            expected(&path).create_file(),
+            expected(&path).access_open_any(),
+            expected(&path).access_close_write(),
+        ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), nested1_dir, nested2_dir])
         );
     }
 
