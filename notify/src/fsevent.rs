@@ -16,7 +16,8 @@
 
 use crate::event::*;
 use crate::{
-    Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, Watcher, unbounded,
+    Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, WatchMode, Watcher,
+    unbounded,
 };
 use fsevent_sys as fs;
 use fsevent_sys::core_foundation as cf;
@@ -275,8 +276,8 @@ impl<'a> FsEventPathsMut<'a> {
     }
 }
 impl PathsMut for FsEventPathsMut<'_> {
-    fn add(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.0.append_path(path, recursive_mode)
+    fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        self.0.append_path(path, watch_mode)
     }
 
     fn remove(&mut self, path: &Path) -> Result<()> {
@@ -303,9 +304,9 @@ impl FsEventWatcher {
         })
     }
 
-    fn watch_inner(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.stop();
-        let result = self.append_path(path, recursive_mode);
+        let result = self.append_path(path, watch_mode.recursive_mode);
         self.run()?;
         result
     }
@@ -587,8 +588,8 @@ impl Watcher for FsEventWatcher {
         Self::from_event_handler(Arc::new(Mutex::new(event_handler)))
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_inner(path, recursive_mode)
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        self.watch_inner(path, watch_mode)
     }
 
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {

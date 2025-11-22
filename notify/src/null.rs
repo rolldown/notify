@@ -4,7 +4,7 @@
 
 use crate::Config;
 
-use super::{RecursiveMode, Result, Watcher};
+use super::{Result, WatchMode, Watcher};
 use std::path::Path;
 
 /// Stub `Watcher` implementation
@@ -14,7 +14,7 @@ use std::path::Path;
 pub struct NullWatcher;
 
 impl Watcher for NullWatcher {
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         Ok(())
     }
 

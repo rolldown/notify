@@ -12,7 +12,7 @@ use std::{
 
 use notify_types::event::Event;
 
-use crate::{Config, Error, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher, WatcherKind};
+use crate::{Config, Error, PollWatcher, RecommendedWatcher, WatchMode, Watcher, WatcherKind};
 use pretty_assertions::assert_eq;
 
 pub use expect::*;
@@ -236,17 +236,17 @@ pub struct TestWatcher<W> {
 
 impl<W: Watcher> TestWatcher<W> {
     pub fn watch_recursively(&mut self, path: impl AsRef<Path>) {
-        self.watch(path, RecursiveMode::Recursive);
+        self.watch(path, WatchMode::recursive());
     }
 
     pub fn watch_nonrecursively(&mut self, path: impl AsRef<Path>) {
-        self.watch(path, RecursiveMode::NonRecursive);
+        self.watch(path, WatchMode::non_recursive());
     }
 
-    pub fn watch(&mut self, path: impl AsRef<Path>, recursive_mode: RecursiveMode) {
+    pub fn watch(&mut self, path: impl AsRef<Path>, watch_mode: WatchMode) {
         let path = path.as_ref();
         self.watcher
-            .watch(path, recursive_mode)
+            .watch(path, watch_mode)
             .unwrap_or_else(|e| panic!("Unable to watch {:?}: {e:#?}", path))
     }
 

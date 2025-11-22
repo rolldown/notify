@@ -3,7 +3,7 @@
 // you can edit the configuration and the app will pick up changes without the need to restart it.
 // This concept is known as hot-reloading.
 use hot_reload_tide::messages::{load_config, Config};
-use notify::{Error, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Error, Event, RecommendedWatcher, WatchMode, Watcher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tide::{Body, Response};
@@ -40,7 +40,7 @@ async fn main() -> tide::Result<()> {
             }
         },notify::Config::default())?;
 
-    watcher.watch(Path::new(CONFIG_PATH), RecursiveMode::Recursive)?;
+    watcher.watch(Path::new(CONFIG_PATH), WatchMode::recursive())?;
 
     // We set up a web server using [Tide](https://github.com/http-rs/tide)
     let mut app = tide::with_state(config);

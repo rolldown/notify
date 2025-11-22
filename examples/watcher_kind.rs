@@ -18,7 +18,7 @@ fn main() {
 
     // watch some stuff
     watcher
-        .watch(Path::new("."), RecursiveMode::Recursive)
+        .watch(Path::new("."), WatchMode::recursive())
         .unwrap();
 
     // just print all events, this blocks forever
