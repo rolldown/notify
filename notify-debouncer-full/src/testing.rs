@@ -6,7 +6,7 @@ use std::{
 
 use file_id::FileId;
 use notify::{
-    Error, ErrorKind, Event, EventKind, RecursiveMode,
+    Error, ErrorKind, Event, EventKind, WatchMode,
     event::{
         AccessKind, AccessMode, CreateKind, DataChange, Flag, MetadataKind, ModifyKind, RemoveKind,
         RenameMode,
@@ -294,10 +294,10 @@ impl FileIdCache for TestCache {
         self.paths.get(path)
     }
 
-    fn add_path(&mut self, path: &Path, recursive_mode: RecursiveMode) {
+    fn add_path(&mut self, path: &Path, watch_mode: WatchMode) {
         for (file_path, file_id) in &self.file_system {
             if file_path == path
-                || (file_path.starts_with(path) && recursive_mode == RecursiveMode::Recursive)
+                || (file_path.starts_with(path) && watch_mode == WatchMode::recursive())
             {
                 self.paths.insert(file_path.clone(), *file_id);
             }

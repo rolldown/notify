@@ -4,7 +4,7 @@ use std::{
 };
 
 use file_id::{FileId, get_file_id};
-use notify::RecursiveMode;
+use notify::{RecursiveMode, WatchMode};
 use walkdir::WalkDir;
 
 /// The interface of a file ID cache.
@@ -19,7 +19,7 @@ pub trait FileIdCache {
     /// Add a new path to the cache or update its value.
     ///
     /// This will be called if a new file or directory is created or if an existing file is overridden.
-    fn add_path(&mut self, path: &Path, recursive_mode: RecursiveMode);
+    fn add_path(&mut self, path: &Path, watch_mode: WatchMode);
 
     /// Remove a path from the cache.
     ///
@@ -32,9 +32,9 @@ pub trait FileIdCache {
     /// The root paths are passed as argument, so the implementer doesn't have to store them.
     ///
     /// The default implementation calls `add_path` for each root path.
-    fn rescan(&mut self, root_paths: &[(PathBuf, RecursiveMode)]) {
-        for (path, recursive_mode) in root_paths {
-            self.add_path(path, *recursive_mode);
+    fn rescan(&mut self, root_paths: &[(PathBuf, WatchMode)]) {
+        for (path, watch_mode) in root_paths {
+            self.add_path(path, *watch_mode);
         }
     }
 }
@@ -64,8 +64,8 @@ impl FileIdCache for FileIdMap {
         self.paths.get(path)
     }
 
-    fn add_path(&mut self, path: &Path, recursive_mode: RecursiveMode) {
-        let is_recursive = recursive_mode == RecursiveMode::Recursive;
+    fn add_path(&mut self, path: &Path, watch_mode: WatchMode) {
+        let is_recursive = watch_mode.recursive_mode == RecursiveMode::Recursive;
 
         for (path, file_id) in WalkDir::new(path)
             .follow_links(true)
@@ -104,7 +104,7 @@ impl FileIdCache for NoCache {
         Option::<&FileId>::None
     }
 
-    fn add_path(&mut self, _path: &Path, _recursive_mode: RecursiveMode) {}
+    fn add_path(&mut self, _path: &Path, _watch_mode: WatchMode) {}
 
     fn remove_path(&mut self, _path: &Path) {}
 }

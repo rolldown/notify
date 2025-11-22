@@ -5,7 +5,7 @@
 //! will return events for the directory itself, and for files inside the directory.
 
 use super::event::*;
-use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, Watcher};
+use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, WatchMode, Watcher};
 use crate::bimap::BiHashMap;
 use crate::{BoundSender, Receiver, Sender, bounded, unbounded};
 use inotify as inotify_sys;
@@ -664,7 +664,7 @@ impl INotifyWatcher {
         Ok(INotifyWatcher { channel, waker })
     }
 
-    fn watch_inner(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         let pb = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -672,7 +672,7 @@ impl INotifyWatcher {
             p.join(path)
         };
         let (tx, rx) = unbounded();
-        let msg = EventLoopMsg::AddWatch(pb, recursive_mode, tx);
+        let msg = EventLoopMsg::AddWatch(pb, watch_mode.recursive_mode, tx);
 
         // we expect the event loop to live and reply => unwraps must not panic
         self.channel.send(msg).unwrap();
@@ -703,8 +703,8 @@ impl Watcher for INotifyWatcher {
         Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_inner(path, recursive_mode)
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        self.watch_inner(path, watch_mode)
     }
 
     fn unwatch(&mut self, path: &Path) -> Result<()> {
@@ -762,9 +762,9 @@ mod tests {
         time::Duration,
     };
 
-    use super::{Config, Error, ErrorKind, Event, INotifyWatcher, RecursiveMode, Result, Watcher};
+    use super::{Config, Error, ErrorKind, Event, INotifyWatcher, Result, Watcher};
 
-    use crate::test::*;
+    use crate::{config::WatchMode, test::*};
 
     fn watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
         channel()
@@ -782,7 +782,7 @@ mod tests {
 
         let result = watcher.watch(
             &PathBuf::from("/some/non/existant/path"),
-            RecursiveMode::NonRecursive,
+            WatchMode::non_recursive(),
         );
 
         assert!(matches!(
@@ -824,10 +824,10 @@ mod tests {
         .unwrap();
 
         watcher
-            .watch(tmpdir.path(), RecursiveMode::Recursive)
+            .watch(tmpdir.path(), WatchMode::recursive())
             .unwrap();
         watcher
-            .watch(proc_path, RecursiveMode::NonRecursive)
+            .watch(proc_path, WatchMode::non_recursive())
             .unwrap();
 
         // give the time to set the limit
@@ -889,7 +889,7 @@ mod tests {
             })
             .collect();
 
-        let non_recursive = RecursiveMode::NonRecursive;
+        let non_recursive = WatchMode::non_recursive();
         for _ in 0..(handles.len() * 4) {
             inotify.watch(dir_path, non_recursive).unwrap();
             inotify.unwatch(dir_path).unwrap();

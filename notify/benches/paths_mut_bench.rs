@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use notify::{RecursiveMode, Watcher};
+use notify::{RecursiveMode, TargetMode, WatchMode, Watcher};
 use std::fs::File;
 use std::hint::black_box;
 use std::path::PathBuf;
@@ -44,7 +44,15 @@ fn create_temp_files(dir: &std::path::Path, count: usize) -> Vec<PathBuf> {
 fn bench_paths_mut<W: Watcher>(watcher: &mut W, paths: &[PathBuf], mode: RecursiveMode) {
     let mut paths_mut = watcher.paths_mut();
     for path in paths {
-        paths_mut.add(path, mode).expect("Failed to add path");
+        paths_mut
+            .add(
+                path,
+                WatchMode {
+                    recursive_mode: mode,
+                    target_mode: TargetMode::TrackPath,
+                },
+            )
+            .expect("Failed to add path");
     }
     paths_mut.commit().expect("Failed to commit paths");
 }

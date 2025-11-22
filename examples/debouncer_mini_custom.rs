@@ -1,6 +1,6 @@
 use std::{path::Path, time::Duration};
 
-use notify::{self, RecursiveMode};
+use notify::{self, WatchMode};
 use notify_debouncer_mini::{Config, new_debouncer_opt};
 
 /// Debouncer with custom backend and waiting for exit
@@ -28,7 +28,7 @@ fn main() {
 
     debouncer
         .watcher()
-        .watch(Path::new("."), RecursiveMode::Recursive)
+        .watch(Path::new("."), WatchMode::recursive())
         .unwrap();
     // print all events, non returning
     for result in rx {

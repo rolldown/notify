@@ -42,7 +42,7 @@
 //!
 //! // Add a path to be watched. All files and directories at that path and
 //! // below will be monitored for changes.
-//! debouncer.watch(".", RecursiveMode::Recursive).unwrap();
+//! debouncer.watch(".", WatchMode::recursive()).unwrap();
 //! ```
 //!
 //! # Features
@@ -88,8 +88,8 @@ pub use notify_types::debouncer_full::DebouncedEvent;
 
 use file_id::FileId;
 use notify::{
-    Error, ErrorKind, Event, EventKind, PathsMut, RecommendedWatcher, RecursiveMode, Watcher,
-    WatcherKind,
+    Error, ErrorKind, Event, EventKind, PathsMut, RecommendedWatcher, RecursiveMode, TargetMode,
+    WatchMode, Watcher, WatcherKind,
     event::{ModifyKind, RemoveKind, RenameMode},
 };
 
@@ -185,7 +185,7 @@ impl Queue {
 #[derive(Debug)]
 pub(crate) struct DebounceDataInner<T> {
     queues: HashMap<PathBuf, Queue>,
-    roots: Vec<(PathBuf, RecursiveMode)>,
+    roots: Vec<(PathBuf, WatchMode)>,
     cache: T,
     rename_event: Option<(DebouncedEvent, Option<FileId>)>,
     rescan_event: Option<DebouncedEvent>,
@@ -290,9 +290,9 @@ impl<T: FileIdCache> DebounceDataInner<T> {
 
         match &event.kind {
             EventKind::Create(_) => {
-                let recursive_mode = self.recursive_mode(path);
+                let watch_mode = self.watch_mode(path);
 
-                self.cache.add_path(path, recursive_mode);
+                self.cache.add_path(path, watch_mode);
 
                 self.push_event(event, now());
             }
@@ -327,9 +327,9 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             }
             _ => {
                 if self.cache.cached_file_id(path).is_none() {
-                    let recursive_mode = self.recursive_mode(path);
+                    let watch_mode = self.watch_mode(path);
 
-                    self.cache.add_path(path, recursive_mode);
+                    self.cache.add_path(path, watch_mode);
                 }
 
                 self.push_event(event, now());
@@ -337,17 +337,20 @@ impl<T: FileIdCache> DebounceDataInner<T> {
         }
     }
 
-    fn recursive_mode(&mut self, path: &Path) -> RecursiveMode {
+    fn watch_mode(&mut self, path: &Path) -> WatchMode {
         self.roots
             .iter()
-            .find_map(|(root, recursive_mode)| {
+            .find_map(|(root, watch_mode)| {
                 if path.starts_with(root) {
-                    Some(*recursive_mode)
+                    Some(*watch_mode)
                 } else {
                     None
                 }
             })
-            .unwrap_or(RecursiveMode::NonRecursive)
+            .unwrap_or(WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::TrackPath, // TODO: correct default?
+            })
     }
 
     fn handle_rename_from(&mut self, event: Event) {
@@ -364,9 +367,9 @@ impl<T: FileIdCache> DebounceDataInner<T> {
     }
 
     fn handle_rename_to(&mut self, event: Event) {
-        let recursive_mode = self.recursive_mode(&event.paths[0]);
+        let watch_mode = self.watch_mode(&event.paths[0]);
 
-        self.cache.add_path(&event.paths[0], recursive_mode);
+        self.cache.add_path(&event.paths[0], watch_mode);
 
         let trackers_match = self
             .rename_event
@@ -569,7 +572,7 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
     #[deprecated = "`Debouncer` now manages root paths automatically. Remove all calls to `add_root` and `remove_root`."]
     pub fn cache(&mut self) {}
 
-    fn add_root(&mut self, path: impl Into<PathBuf>, recursive_mode: RecursiveMode) {
+    fn add_root(&mut self, path: impl Into<PathBuf>, watch_mode: WatchMode) {
         let path = path.into();
 
         let mut data = self.data.lock().unwrap();
@@ -579,9 +582,9 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
             return;
         }
 
-        data.roots.push((path.clone(), recursive_mode));
+        data.roots.push((path.clone(), watch_mode));
 
-        data.cache.add_path(&path, recursive_mode);
+        data.cache.add_path(&path, watch_mode);
     }
 
     fn remove_root(&mut self, path: impl AsRef<Path>) {
@@ -592,13 +595,9 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
         data.cache.remove_path(path.as_ref());
     }
 
-    pub fn watch(
-        &mut self,
-        path: impl AsRef<Path>,
-        recursive_mode: RecursiveMode,
-    ) -> notify::Result<()> {
-        self.watcher.watch(path.as_ref(), recursive_mode)?;
-        self.add_root(path.as_ref(), recursive_mode);
+    pub fn watch(&mut self, path: impl AsRef<Path>, watch_mode: WatchMode) -> notify::Result<()> {
+        self.watcher.watch(path.as_ref(), watch_mode)?;
+        self.add_root(path.as_ref(), watch_mode);
         Ok(())
     }
 
@@ -838,7 +837,7 @@ mod tests {
         MockTime::set_time(time);
 
         let mut state = test_case.state.into_debounce_data_inner(time);
-        state.roots = vec![(PathBuf::from("/"), RecursiveMode::Recursive)];
+        state.roots = vec![(PathBuf::from("/"), WatchMode::recursive())];
 
         let mut prev_event_time = Duration::default();
 
@@ -926,7 +925,7 @@ mod tests {
         // set up the watcher
         let (tx, rx) = std::sync::mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(10), None, tx)?;
-        debouncer.watch(dir.path(), RecursiveMode::Recursive)?;
+        debouncer.watch(dir.path(), WatchMode::recursive())?;
 
         // create a new file
         let file_path = dir.path().join("file.txt");
