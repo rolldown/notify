@@ -35,9 +35,9 @@ libc = "0.2.4"
 log = "0.4.17"
 mio = { version = "1.0", features = ["os-ext"] }
 web-time = "1.1.0"
-rolldown-notify = { version = "8.2.2", path = "notify" }
-rolldown-notify-debouncer-full = { version = "0.6.2", path = "notify-debouncer-full" }
-rolldown-notify-debouncer-mini = { version = "0.7.2", path = "notify-debouncer-mini" }
+rolldown-notify = { version = "8.2.3", path = "notify" }
+rolldown-notify-debouncer-full = { version = "0.6.3", path = "notify-debouncer-full" }
+rolldown-notify-debouncer-mini = { version = "0.7.3", path = "notify-debouncer-mini" }
 rolldown-notify-types = { version = "2.0.1", path = "notify-types" }
 pretty_assertions = "1.3.0"
 rstest = "0.26.0"
