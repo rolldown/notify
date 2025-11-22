@@ -1,13 +1,7 @@
 #![allow(dead_code)] // not all helpers are used for all targets
 
 use std::{
-    collections::HashSet,
-    fmt::Debug,
-    ops::Deref,
-    path::{Path, PathBuf},
-    sync::mpsc::{self, RecvTimeoutError},
-    thread,
-    time::{Duration, Instant},
+    collections::HashSet, fmt::Debug, fs, ops::Deref, path::{Path, PathBuf}, sync::mpsc::{self, RecvTimeoutError}, thread, time::{Duration, Instant}
 };
 
 use notify_types::event::Event;
@@ -360,6 +354,13 @@ impl TestDir {
     pub fn to_path_buf(&self) -> PathBuf {
         self.path.to_path_buf()
     }
+
+    pub fn parent_path_buf(&self) -> PathBuf {
+        self.path
+            .parent()
+            .expect("TestDir has no parent")
+            .to_path_buf()
+    }
 }
 
 impl AsRef<Path> for TestDir {
@@ -377,7 +378,9 @@ pub fn testdir() -> TestDir {
             dir.path()
         )
     });
-    TestDir { _dir: dir, path }
+    let nested_path = path.join("nested");
+    fs::create_dir(&nested_path).expect("Unable to create nested directory");
+    TestDir { _dir: dir, path: nested_path }
 }
 
 /// Collection to store [`notify_types::event::EventAttributes::tracker`]

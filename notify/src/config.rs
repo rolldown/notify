@@ -27,6 +27,11 @@ impl WatchMode {
             target_mode: TargetMode::TrackPath,
         }
     }
+
+    pub(crate) fn upgrade_with(&mut self, other: WatchMode) {
+        self.recursive_mode = self.recursive_mode.upgraded_with(other.recursive_mode);
+        self.target_mode = self.target_mode.upgraded_with(other.target_mode);
+    }
 }
 
 /// Indicates whether only the provided directory or its sub-directories as well should be watched
@@ -46,6 +51,19 @@ impl RecursiveMode {
             RecursiveMode::NonRecursive => false,
         }
     }
+
+    pub(crate) fn upgraded_with(self, other: Self) -> Self {
+        match self {
+            RecursiveMode::Recursive => self,
+            RecursiveMode::NonRecursive => {
+                if other == RecursiveMode::Recursive {
+                    other
+                } else {
+                    self
+                }
+            }
+        }
+    }
 }
 
 /// Indicates what happens when the relationship of the physical entity and the file path changes
@@ -57,7 +75,7 @@ pub enum TargetMode {
     /// (e.g., by a move/rename operation), the watch continues to monitor the new entity
     /// that now occupies the path.
     ///
-    /// TODO: This is not yet implemented. Currently, all backends behave as NoTrack.
+    /// TODO: This is not yet implemented. Currently, all backends expect for inotify behave as NoTrack.
     TrackPath,
 
     /// Does not track the file path, nor the physical entity.
@@ -65,6 +83,21 @@ pub enum TargetMode {
     /// If the underlying physical entity (inode/File ID) is replaced
     /// (e.g., by a move/rename operation), the watch stops monitoring.
     NoTrack,
+}
+
+impl TargetMode {
+    pub(crate) fn upgraded_with(self, other: Self) -> Self {
+        match self {
+            TargetMode::TrackPath => self,
+            TargetMode::NoTrack => {
+                if other == TargetMode::TrackPath {
+                    other
+                } else {
+                    self
+                }
+            }
+        }
+    }
 }
 
 /// Watcher Backend configuration
