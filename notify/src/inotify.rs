@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
 use std::fs::metadata;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -63,12 +64,16 @@ enum EventLoopMsg {
 #[inline]
 fn add_watch_by_event(
     path: &PathBuf,
-    is_dir: bool,
+    is_file_without_hardlinks: bool,
     watches: &HashMap<PathBuf, RecursiveMode>,
     add_watches: &mut Vec<(PathBuf, bool, bool)>,
 ) {
     if let Some(recursive_mode) = watches.get(path) {
-        add_watches.push((path.to_owned(), recursive_mode.is_recursive(), is_dir));
+        add_watches.push((
+            path.to_owned(),
+            recursive_mode.is_recursive(),
+            is_file_without_hardlinks,
+        ));
         return;
     }
 
@@ -76,14 +81,18 @@ fn add_watch_by_event(
         return;
     };
     if let Some(recursive_mode) = watches.get(parent) {
-        add_watches.push((path.to_owned(), recursive_mode.is_recursive(), is_dir));
+        add_watches.push((
+            path.to_owned(),
+            recursive_mode.is_recursive(),
+            is_file_without_hardlinks,
+        ));
         return;
     }
 
     let mut current = parent;
     while let Some(parent) = current.parent() {
         if let Some(RecursiveMode::Recursive) = watches.get(parent) {
-            add_watches.push((path.to_owned(), true, is_dir));
+            add_watches.push((path.to_owned(), true, is_file_without_hardlinks));
             return;
         }
         current = parent;
@@ -297,8 +306,17 @@ impl EventLoop {
                                         .add_path(path.clone()),
                                     );
                                 }
-                                let is_dir = event.mask.contains(EventMask::ISDIR);
-                                add_watch_by_event(&path, is_dir, &self.watches, &mut add_watches);
+                                let is_file_without_hardlinks =
+                                    !event.mask.contains(EventMask::ISDIR)
+                                        && metadata(&path)
+                                            .map(|m| m.is_file_without_hardlinks())
+                                            .unwrap_or_default();
+                                add_watch_by_event(
+                                    &path,
+                                    is_file_without_hardlinks,
+                                    &self.watches,
+                                    &mut add_watches,
+                                );
                             }
                             if event.mask.contains(EventMask::MOVE_SELF) {
                                 evs.push(
@@ -321,7 +339,16 @@ impl EventLoop {
                                     }))
                                     .add_path(path.clone()),
                                 );
-                                add_watch_by_event(&path, is_dir, &self.watches, &mut add_watches);
+                                let is_file_without_hardlinks = !is_dir
+                                    && metadata(&path)
+                                        .map(|m| m.is_file_without_hardlinks())
+                                        .unwrap_or_default();
+                                add_watch_by_event(
+                                    &path,
+                                    is_file_without_hardlinks,
+                                    &self.watches,
+                                    &mut add_watches,
+                                );
                             }
                             if event.mask.contains(EventMask::DELETE) {
                                 evs.push(
@@ -423,9 +450,9 @@ impl EventLoop {
             self.remove_maybe_recursive_watch(path, true).ok();
         }
 
-        for (path, is_recursive, is_dir) in add_watches {
+        for (path, is_recursive, is_file_without_hardlinks) in add_watches {
             if let Err(add_watch_error) =
-                self.add_maybe_recursive_watch(path, is_recursive, is_dir, false)
+                self.add_maybe_recursive_watch(path, is_recursive, is_file_without_hardlinks, false)
             {
                 // The handler should be notified if we have reached the limit.
                 // Otherwise, the user might expect that a recursive watch
@@ -454,19 +481,19 @@ impl EventLoop {
 
             // upgrade to recursive
             if metadata(&path).map_err(Error::io)?.is_dir() {
-                self.add_maybe_recursive_watch(path.clone(), true, true, true)?;
+                self.add_maybe_recursive_watch(path.clone(), true, false, true)?;
             }
             *self.watches.get_mut(&path).unwrap() = RecursiveMode::Recursive;
             return Ok(());
         }
 
-        let is_dir = metadata(&path).map_err(Error::io_watch)?.is_dir();
+        let meta = metadata(&path).map_err(Error::io_watch)?;
         self.add_maybe_recursive_watch(
             path.clone(),
             // If the watch is not recursive, or if we determine (by stat'ing the path to get its
             // metadata) that the watched path is not a directory, add a single path watch.
-            recursive_mode.is_recursive() && is_dir,
-            is_dir,
+            recursive_mode.is_recursive() && meta.is_dir(),
+            meta.is_file_without_hardlinks(),
             true,
         )?;
 
@@ -479,7 +506,7 @@ impl EventLoop {
         &mut self,
         path: PathBuf,
         is_recursive: bool,
-        is_dir: bool,
+        is_file_without_hardlinks: bool,
         mut watch_self: bool,
     ) -> Result<()> {
         if is_recursive {
@@ -488,16 +515,21 @@ impl EventLoop {
                 .into_iter()
                 .filter_map(filter_dir)
             {
-                self.add_single_watch(entry.into_path(), true, watch_self)?;
+                self.add_single_watch(entry.into_path(), false, watch_self)?;
                 watch_self = false;
             }
         } else {
-            self.add_single_watch(path.clone(), is_dir, watch_self)?;
+            self.add_single_watch(path.clone(), is_file_without_hardlinks, watch_self)?;
         }
         Ok(())
     }
 
-    fn add_single_watch(&mut self, path: PathBuf, is_dir: bool, watch_self: bool) -> Result<()> {
+    fn add_single_watch(
+        &mut self,
+        path: PathBuf,
+        is_file_without_hardlinks: bool,
+        watch_self: bool,
+    ) -> Result<()> {
         if let Some((_, &(old_watch_self, _))) = self.watch_handles.get_by_right(&path)
             // if upgrade to watch self is not needed
             && (old_watch_self || !watch_self)
@@ -505,7 +537,7 @@ impl EventLoop {
             return Ok(());
         }
 
-        if !is_dir
+        if is_file_without_hardlinks
             && let Some(parent) = path.parent()
             && self.watch_handles.get_by_right(parent).is_some()
         {
@@ -706,6 +738,17 @@ impl Drop for INotifyWatcher {
         // we expect the event loop to live => unwrap must not panic
         self.channel.send(EventLoopMsg::Shutdown).unwrap();
         self.waker.wake().unwrap();
+    }
+}
+
+trait MetadataNotifyExt {
+    fn is_file_without_hardlinks(&self) -> bool;
+}
+
+impl MetadataNotifyExt for std::fs::Metadata {
+    #[inline]
+    fn is_file_without_hardlinks(&self) -> bool {
+        self.is_file() && self.nlink() == 1
     }
 }
 
@@ -1379,6 +1422,34 @@ mod tests {
             expected(&file).access_close_write(),
         ]);
         assert_eq!(watcher.get_watch_handles(), HashSet::from([file]));
+    }
+
+    #[test]
+    fn write_to_a_hardlink_pointed_to_the_watched_file_triggers_an_event_even_if_the_parent_is_watched()
+     {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let subdir1 = tmpdir.path().join("subdir1");
+        let subdir2 = subdir1.join("subdir2");
+        let file = subdir2.join("file");
+        let hardlink = tmpdir.path().join("hardlink");
+
+        std::fs::create_dir_all(&subdir2).expect("create");
+        std::fs::write(&file, "").expect("file");
+        std::fs::hard_link(&file, &hardlink).expect("hardlink");
+
+        watcher.watch_nonrecursively(&subdir2);
+        watcher.watch_nonrecursively(&file);
+
+        std::fs::write(&hardlink, "123123").expect("write to the hard link");
+
+        rx.wait_ordered_exact([
+            expected(&file).access_open_any(),
+            expected(&file).modify_data_any().multiple(),
+            expected(&file).access_close_write(),
+        ]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir2, file]));
     }
 
     #[test]
