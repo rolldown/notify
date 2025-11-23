@@ -1,6 +1,6 @@
 [package]
 name = "rolldown-notify-debouncer-mini"
-version = "0.7.3"
+version = "0.7.4"
 description = "notify mini debouncer for events"
 documentation = "https://docs.rs/notify-debouncer-mini"
 authors = ["Aron Heinecke <Ox0p54r36@t-online.de>"]
