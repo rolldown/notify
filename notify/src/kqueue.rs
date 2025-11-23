@@ -983,8 +983,11 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_ordered_exact([expected(&file).remove_any()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([
+            expected(&file).remove_any(),
+            expected(tmpdir.path()).modify_data_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
@@ -993,7 +996,7 @@ mod tests {
         std::fs::write(&file, "").expect("write");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_data_any(),
+            expected(tmpdir.path()).modify_data_any().optional(),
             expected(&file).create_file(),
         ]);
         assert_eq!(
