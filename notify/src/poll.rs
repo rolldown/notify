@@ -3,7 +3,7 @@
 //! Checks the `watch`ed paths periodically to detect changes. This implementation only uses
 //! Rust stdlib APIs and should work on all of the platforms it supports.
 
-use crate::{Config, Error, EventHandler, Receiver, RecursiveMode, Sender, Watcher, unbounded};
+use crate::{Config, Error, EventHandler, Receiver, Sender, WatchMode, Watcher, unbounded};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -609,7 +609,7 @@ impl PollWatcher {
     ///
     /// QUESTION: this function never return an Error, is it as intend?
     /// Please also consider the IO Error event problem.
-    fn watch_inner(&mut self, path: &Path, recursive_mode: RecursiveMode) {
+    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) {
         // HINT: Make sure always lock in the same order to avoid deadlock.
         //
         // FIXME: inconsistent: some place mutex poison cause panic, some place just ignore.
@@ -620,7 +620,7 @@ impl PollWatcher {
 
             let watch_data = data_builder.build_watch_data(
                 path.to_path_buf(),
-                recursive_mode.is_recursive(),
+                watch_mode.recursive_mode.is_recursive(),
                 self.follow_sylinks,
             );
 
@@ -651,8 +651,8 @@ impl Watcher for PollWatcher {
         Self::new(event_handler, config)
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> crate::Result<()> {
-        self.watch_inner(path, recursive_mode);
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> crate::Result<()> {
+        self.watch_inner(path, watch_mode);
 
         Ok(())
     }

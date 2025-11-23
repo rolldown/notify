@@ -1,4 +1,4 @@
-use notify::{Config, PollWatcher, RecursiveMode, Watcher};
+use notify::{Config, PollWatcher, WatchMode, Watcher};
 use std::path::Path;
 
 // Example for the PollWatcher with manual polling.
@@ -24,7 +24,7 @@ fn watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
 
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
-    watcher.watch(path.as_ref(), RecursiveMode::Recursive)?;
+    watcher.watch(path.as_ref(), WatchMode::recursive())?;
 
     // run event receiver on a different thread, we want this one for user input
     std::thread::spawn(move || {

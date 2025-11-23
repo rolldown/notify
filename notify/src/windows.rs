@@ -5,7 +5,7 @@
 //!
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
-use crate::{BoundSender, Config, Receiver, Sender, bounded, unbounded};
+use crate::{BoundSender, Config, Receiver, Sender, WatchMode, bounded, unbounded};
 use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
 use crate::{WatcherKind, event::*};
 use std::alloc;
@@ -569,14 +569,14 @@ impl ReadDirectoryChangesWatcher {
         }
     }
 
-    fn watch_inner(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         let pb = if path.is_absolute() {
             path.to_owned()
         } else {
             let p = env::current_dir().map_err(Error::io)?;
             p.join(path)
         };
-        self.send_action_require_ack(Action::Watch(pb.clone(), recursive_mode), &pb)
+        self.send_action_require_ack(Action::Watch(pb.clone(), watch_mode.recursive_mode), &pb)
     }
 
     fn unwatch_inner(&mut self, path: &Path) -> Result<()> {
@@ -601,8 +601,8 @@ impl Watcher for ReadDirectoryChangesWatcher {
         Self::create(event_handler)
     }
 
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_inner(path, recursive_mode)
+    fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        self.watch_inner(path, watch_mode)
     }
 
     fn unwatch(&mut self, path: &Path) -> Result<()> {
@@ -643,7 +643,7 @@ unsafe impl Sync for ReadDirectoryChangesWatcher {}
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{ReadDirectoryChangesWatcher, RecursiveMode, Watcher, test::*};
+    use crate::{ReadDirectoryChangesWatcher, WatchMode, Watcher, test::*};
 
     use std::{collections::HashSet, time::Duration};
 
@@ -660,7 +660,7 @@ pub mod tests {
         let mut watcher = crate::recommended_watcher(|_| {
             // Do something with the event
         })?;
-        watcher.watch(&child_dir, RecursiveMode::NonRecursive)?;
+        watcher.watch(&child_dir, WatchMode::non_recursive())?;
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([child_dir.clone()])
@@ -668,7 +668,7 @@ pub mod tests {
 
         trash::delete(&child_dir)?;
 
-        watcher.watch(dir.path(), RecursiveMode::NonRecursive)?;
+        watcher.watch(dir.path(), WatchMode::non_recursive())?;
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([dir.to_path_buf()])
@@ -1133,6 +1133,8 @@ pub mod tests {
         watcher.watch_nonrecursively(&path);
         std::fs::File::create_new(&file).expect("create");
         std::fs::remove_file(&file).expect("delete");
+
+        rx.ensure_empty();
 
         watcher.watch_recursively(&path);
         std::fs::File::create_new(&file).expect("create");

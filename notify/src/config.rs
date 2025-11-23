@@ -2,6 +2,33 @@
 
 use std::time::Duration;
 
+/// Indicates how the path should be watched
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+pub struct WatchMode {
+    /// Indicates whether to watch sub-directories as well
+    pub recursive_mode: RecursiveMode,
+    /// Indicates what happens when the relationship of the physical entity and the file path changes
+    pub target_mode: TargetMode,
+}
+
+impl WatchMode {
+    /// Creates a WatchMode that watches directories recursively and tracks the file path
+    pub fn recursive() -> Self {
+        Self {
+            recursive_mode: RecursiveMode::Recursive,
+            target_mode: TargetMode::TrackPath,
+        }
+    }
+
+    /// Creates a WatchMode that watches only the provided directory and tracks the file path
+    pub fn non_recursive() -> Self {
+        Self {
+            recursive_mode: RecursiveMode::NonRecursive,
+            target_mode: TargetMode::TrackPath,
+        }
+    }
+}
+
 /// Indicates whether only the provided directory or its sub-directories as well should be watched
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum RecursiveMode {
@@ -19,6 +46,25 @@ impl RecursiveMode {
             RecursiveMode::NonRecursive => false,
         }
     }
+}
+
+/// Indicates what happens when the relationship of the physical entity and the file path changes
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum TargetMode {
+    /// Tracks the file path.
+    ///
+    /// If the underlying physical entity (inode/File ID) at this path is replaced
+    /// (e.g., by a move/rename operation), the watch continues to monitor the new entity
+    /// that now occupies the path.
+    ///
+    /// TODO: This is not yet implemented. Currently, all backends behave as NoTrack.
+    TrackPath,
+
+    /// Does not track the file path, nor the physical entity.
+    ///
+    /// If the underlying physical entity (inode/File ID) is replaced
+    /// (e.g., by a move/rename operation), the watch stops monitoring.
+    NoTrack,
 }
 
 /// Watcher Backend configuration
