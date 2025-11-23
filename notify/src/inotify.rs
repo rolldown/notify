@@ -1510,6 +1510,7 @@ mod tests {
         rx.wait_ordered_exact([
             expected(&path).access_open_any().optional(),
             expected(&path).remove_folder(),
+            expected(&path).access_open_any().optional(),
         ])
         .ensure_no_tail();
         assert_eq!(
@@ -1522,6 +1523,7 @@ mod tests {
         rx.wait_ordered_exact([
             expected(&path).access_open_any().optional(),
             expected(&path).create_folder(),
+            expected(&path).access_open_any().optional(),
         ])
         .ensure_no_tail();
         assert_eq!(
