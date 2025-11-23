@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.2.4](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.3...rolldown-notify-v8.2.4) - 2025-11-23
+
+### Fixed
+
+- watch hardlinks correctly for inotify backend ([#20](https://github.com/rolldown/notify/pull/20))
+- prevent hanging on file additions in recursive watches for inotify backend ([#18](https://github.com/rolldown/notify/pull/18))
+
+### Other
+
+- merge adjacent `if` and `match` statements ([#24](https://github.com/rolldown/notify/pull/24))
+
 ## [8.2.3](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.2...rolldown-notify-v8.2.3) - 2025-11-21
 
 ### Fixed

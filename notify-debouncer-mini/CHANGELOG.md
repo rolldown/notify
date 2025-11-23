@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.7.3...rolldown-notify-debouncer-mini-v0.7.4) - 2025-11-23
+
+### Other
+
+- updated the following local packages: rolldown-notify
+
 ## [0.7.3](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.7.2...rolldown-notify-debouncer-mini-v0.7.3) - 2025-11-21
 
 ### Other
