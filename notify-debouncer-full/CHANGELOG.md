@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.6.4...rolldown-notify-debouncer-full-v0.7.0) - 2025-11-23
+
+### Added
+
+- [**breaking**] change `Watcher::watch` to take `WatchMode` instead of `RecursiveMode` ([#21](https://github.com/rolldown/notify/pull/21))
+
 ## [0.6.4](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.6.3...rolldown-notify-debouncer-full-v0.6.4) - 2025-11-23
 
 ### Other

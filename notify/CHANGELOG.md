@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.0.0](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.4...rolldown-notify-v9.0.0) - 2025-11-23
+
+### Added
+
+- implement `TargetMode::TrackPath` for kqueue ([#25](https://github.com/rolldown/notify/pull/25))
+- implement `TargetMode::TrackPath` for fsevent ([#27](https://github.com/rolldown/notify/pull/27))
+- implement `TargetMode::TrackPath` for Windows ([#23](https://github.com/rolldown/notify/pull/23))
+- implement `TargetMode::TrackPath` for inotify ([#22](https://github.com/rolldown/notify/pull/22))
+- [**breaking**] change `Watcher::watch` to take `WatchMode` instead of `RecursiveMode` ([#21](https://github.com/rolldown/notify/pull/21))
+
+### Other
+
+- update TargetMode comment ([#36](https://github.com/rolldown/notify/pull/36))
+- add optional expected events to reduce flakiness ([#31](https://github.com/rolldown/notify/pull/31))
+- add `TargetMode` related tests for polling watcher ([#30](https://github.com/rolldown/notify/pull/30))
+- wait a short period before checking whether no events were received ([#29](https://github.com/rolldown/notify/pull/29))
+- add optional expected events to reduce flakiness ([#28](https://github.com/rolldown/notify/pull/28))
+
 ## [8.2.4](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.3...rolldown-notify-v8.2.4) - 2025-11-23
 
 ### Fixed
