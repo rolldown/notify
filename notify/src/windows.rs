@@ -469,37 +469,34 @@ unsafe extern "system" fn handle_event(
 
             let event_handler = |res| emit_event(&request.event_handler, res);
 
-            if cur_entry.Action == FILE_ACTION_RENAMED_OLD_NAME {
-                let mode = RenameMode::From;
-                let kind = ModifyKind::Name(mode);
-                let kind = EventKind::Modify(kind);
-                let ev = newe.set_kind(kind);
-                event_handler(Ok(ev))
-            } else {
-                match cur_entry.Action {
-                    FILE_ACTION_RENAMED_NEW_NAME => {
-                        let kind = EventKind::Modify(ModifyKind::Name(RenameMode::To));
-                        let ev = newe.set_kind(kind);
-                        event_handler(Ok(ev));
-                    }
-                    FILE_ACTION_ADDED => {
-                        let kind = EventKind::Create(CreateKind::Any);
-                        let ev = newe.set_kind(kind);
-                        event_handler(Ok(ev));
-                    }
-                    FILE_ACTION_REMOVED => {
-                        let kind = EventKind::Remove(RemoveKind::Any);
-                        let ev = newe.set_kind(kind);
-                        event_handler(Ok(ev));
-                    }
-                    FILE_ACTION_MODIFIED => {
-                        let kind = EventKind::Modify(ModifyKind::Any);
-                        let ev = newe.set_kind(kind);
-                        event_handler(Ok(ev));
-                    }
-                    _ => (),
-                };
-            }
+            match cur_entry.Action {
+                FILE_ACTION_RENAMED_OLD_NAME => {
+                    let kind = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+                    let ev = newe.set_kind(kind);
+                    event_handler(Ok(ev))
+                }
+                FILE_ACTION_RENAMED_NEW_NAME => {
+                    let kind = EventKind::Modify(ModifyKind::Name(RenameMode::To));
+                    let ev = newe.set_kind(kind);
+                    event_handler(Ok(ev));
+                }
+                FILE_ACTION_ADDED => {
+                    let kind = EventKind::Create(CreateKind::Any);
+                    let ev = newe.set_kind(kind);
+                    event_handler(Ok(ev));
+                }
+                FILE_ACTION_REMOVED => {
+                    let kind = EventKind::Remove(RemoveKind::Any);
+                    let ev = newe.set_kind(kind);
+                    event_handler(Ok(ev));
+                }
+                FILE_ACTION_MODIFIED => {
+                    let kind = EventKind::Modify(ModifyKind::Any);
+                    let ev = newe.set_kind(kind);
+                    event_handler(Ok(ev));
+                }
+                _ => (),
+            };
         }
 
         if cur_entry.NextEntryOffset == 0 {
