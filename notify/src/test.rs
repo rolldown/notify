@@ -156,6 +156,12 @@ impl Receiver {
         }
     }
 
+    /// Ensures, that the receiver part is empty. It waits for a short period and then checks the channel
+    pub fn ensure_empty_with_wait(&mut self) {
+        thread::sleep(Duration::from_millis(10));
+        self.ensure_empty();
+    }
+
     /// see [`sleep_until`].
     ///
     /// it uses timeout from [`Self::timeout`]

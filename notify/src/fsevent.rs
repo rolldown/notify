@@ -885,8 +885,7 @@ mod tests {
 
         std::fs::write(&file, "").expect("write");
 
-        thread::sleep(Duration::from_millis(10));
-        // rx.ensure_empty(); // TODO: should unwatch
+        // rx.ensure_empty_with_wait(); // TODO: should unwatch
     }
 
     #[test]
@@ -1013,8 +1012,7 @@ mod tests {
 
         std::fs::create_dir(&path).expect("create_dir2");
 
-        thread::sleep(Duration::from_millis(10));
-        // rx.ensure_empty(); // TODO: should unwatch
+        // rx.ensure_empty_with_wait(); // TODO: should unwatch
     }
 
     #[test]

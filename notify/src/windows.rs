@@ -1053,7 +1053,7 @@ pub mod tests {
 
         // std::fs::write(&file, "").expect("write");
 
-        // rx.ensure_empty();
+        // rx.ensure_empty_with_wait();
     }
 
     #[test]
@@ -1284,7 +1284,7 @@ pub mod tests {
 
         std::fs::create_dir(&path).expect("create_dir2");
 
-        rx.ensure_empty();
+        rx.ensure_empty_with_wait();
     }
 
     #[test]
