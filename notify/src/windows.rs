@@ -1079,7 +1079,7 @@ pub mod tests {
             expected(tmpdir.path()).modify_any().optional(),
             expected(&overwriting_file).rename_from(),
             expected(&overwritten_file).rename_to(),
-            expected(tmpdir.path()).modify_any(),
+            expected(tmpdir.path()).modify_any().optional(),
         ])
         .ensure_no_tail();
         assert_eq!(
