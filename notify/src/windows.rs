@@ -1076,6 +1076,7 @@ pub mod tests {
             expected(tmpdir.path()).modify_any(),
             expected(&overwriting_file).modify_any().multiple(),
             expected(&overwritten_file).remove_any(),
+            expected(tmpdir.path()).modify_any().optional(),
             expected(&overwriting_file).rename_from(),
             expected(&overwritten_file).rename_to(),
             expected(tmpdir.path()).modify_any(),
