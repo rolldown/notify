@@ -14,11 +14,8 @@
 
 #![allow(non_upper_case_globals, dead_code)]
 
-use crate::event::*;
-use crate::{
-    Config, Error, EventHandler, PathsMut, RecursiveMode, Result, Sender, WatchMode, Watcher,
-    unbounded,
-};
+use crate::{Config, Error, EventHandler, PathsMut, Result, Sender, WatchMode, Watcher, unbounded};
+use crate::{TargetMode, event::*};
 use fsevent_sys as fs;
 use fsevent_sys::core_foundation as cf;
 use std::collections::HashMap;
@@ -277,7 +274,7 @@ impl<'a> FsEventPathsMut<'a> {
 }
 impl PathsMut for FsEventPathsMut<'_> {
     fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
-        self.0.append_path(path, watch_mode.recursive_mode)
+        self.0.append_path(path, watch_mode)
     }
 
     fn remove(&mut self, path: &Path) -> Result<()> {
@@ -306,7 +303,7 @@ impl FsEventWatcher {
 
     fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.stop();
-        let result = self.append_path(path, watch_mode.recursive_mode);
+        let result = self.append_path(path, watch_mode);
         self.run()?;
         result
     }
@@ -384,11 +381,16 @@ impl FsEventWatcher {
     }
 
     // https://github.com/thibaudgg/rb-fsevent/blob/master/ext/fsevent_watch/main.c
-    fn append_path(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
-        if !path.exists() {
+    fn append_path(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        if (!path.exists() && watch_mode.target_mode != TargetMode::TrackPath)
+            || path == Path::new("")
+        {
             return Err(Error::path_not_found().add_path(path.into()));
         }
-        let canonical_path = path.to_path_buf().canonicalize()?;
+        let canonical_path = path
+            .to_path_buf()
+            .canonicalize()
+            .unwrap_or(path.to_path_buf());
         let str_path = path.to_str().unwrap();
         unsafe {
             let mut err: cf::CFErrorRef = ptr::null_mut();
@@ -403,7 +405,7 @@ impl FsEventWatcher {
             cf::CFRelease(cf_path);
         }
         self.recursive_info
-            .insert(canonical_path, recursive_mode.is_recursive());
+            .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
         Ok(())
     }
 
@@ -624,7 +626,7 @@ impl Drop for FsEventWatcher {
 mod tests {
     use std::time::Duration;
 
-    use crate::ErrorKind;
+    use crate::{ErrorKind, RecursiveMode, TargetMode};
 
     use super::*;
     use crate::test::*;
@@ -711,6 +713,20 @@ mod tests {
     }
 
     #[test]
+    fn create_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+
+        watcher.watch_nonrecursively(&path);
+
+        std::fs::File::create_new(&path).expect("create");
+
+        rx.wait_ordered_exact([expected(&path).create_file()]);
+    }
+
+    #[test]
     fn write_file() {
         let tmpdir = testdir();
 
@@ -759,6 +775,64 @@ mod tests {
     }
 
     #[test]
+    fn rename_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        watcher.watch_nonrecursively(&path);
+        let new_path = tmpdir.path().join("renamed");
+
+        std::fs::rename(&path, &new_path).expect("rename");
+
+        rx.wait_unordered([expected(&path).rename_any()]);
+
+        std::fs::rename(&new_path, &path).expect("rename2");
+
+        rx.wait_unordered([expected(&path).rename_any()]);
+    }
+
+    #[test]
+    fn rename_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        let new_path = tmpdir.path().join("renamed");
+
+        std::fs::rename(&path, &new_path).expect("rename");
+
+        rx.wait_unordered([expected(&path).rename_any()]);
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(Error {
+                paths: _,
+                kind: ErrorKind::PathNotFound
+            })
+        ));
+    }
+
+    #[test]
     fn delete_file() {
         let tmpdir = testdir();
         let (mut watcher, mut rx) = watcher();
@@ -783,7 +857,36 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_unordered([expected(file).remove_file()]);
+        rx.wait_unordered([expected(&file).remove_file()]);
+
+        std::fs::write(&file, "").expect("write");
+
+        rx.wait_ordered_exact([expected(&file).create_file()]);
+    }
+
+    #[test]
+    fn delete_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let file = tmpdir.path().join("file");
+        std::fs::write(&file, "").expect("write");
+
+        watcher.watch(
+            &file,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        std::fs::remove_file(&file).expect("remove");
+
+        rx.wait_unordered([expected(&file).remove_file()]);
+
+        std::fs::write(&file, "").expect("write");
+
+        thread::sleep(Duration::from_millis(10));
+        // rx.ensure_empty(); // TODO: should unwatch
     }
 
     #[test]
@@ -866,6 +969,52 @@ mod tests {
         std::fs::remove_dir(&path).expect("remove");
 
         rx.wait_unordered([expected(path).remove_folder()]);
+    }
+
+    #[test]
+    fn delete_self_dir() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::create_dir(&path).expect("create_dir");
+
+        watcher.watch_recursively(&tmpdir);
+        std::fs::remove_dir(&path).expect("remove");
+
+        rx.wait_unordered([expected(&path).remove_folder()]);
+
+        std::fs::create_dir(&path).expect("create_dir2");
+
+        rx.wait_ordered([expected(&path).create_folder()]);
+    }
+
+    #[test]
+    fn delete_self_dir_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::create_dir(&path).expect("create_dir");
+
+        watcher
+            .watcher
+            .watch(
+                &path,
+                WatchMode {
+                    recursive_mode: RecursiveMode::Recursive,
+                    target_mode: TargetMode::NoTrack,
+                },
+            )
+            .expect("watch");
+        std::fs::remove_dir(&path).expect("remove");
+
+        rx.wait_unordered([expected(&path).remove_folder()]);
+
+        std::fs::create_dir(&path).expect("create_dir2");
+
+        thread::sleep(Duration::from_millis(10));
+        // rx.ensure_empty(); // TODO: should unwatch
     }
 
     #[test]
@@ -999,10 +1148,12 @@ mod tests {
         let (mut watcher, mut rx) = watcher();
 
         let subdir = tmpdir.path().join("subdir");
+        let subdir2 = tmpdir.path().join("subdir2");
         let file = subdir.join("file");
-        let hardlink = tmpdir.path().join("hardlink");
+        let hardlink = subdir2.join("hardlink");
 
         std::fs::create_dir(&subdir).expect("create");
+        std::fs::create_dir(&subdir2).expect("create2");
         std::fs::write(&file, "").expect("file");
         std::fs::hard_link(&file, &hardlink).expect("hardlink");
 
