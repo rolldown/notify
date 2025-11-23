@@ -7,7 +7,7 @@
 use super::event::*;
 use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, WatchMode, Watcher};
 use crate::bimap::BiHashMap;
-use crate::{BoundSender, Receiver, Sender, bounded, unbounded};
+use crate::{BoundSender, Receiver, Sender, TargetMode, bounded, unbounded};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ struct EventLoop {
     event_loop_rx: Receiver<EventLoopMsg>,
     inotify: Option<Inotify>,
     event_handler: Box<dyn EventHandler>,
-    watches: HashMap<PathBuf, RecursiveMode>,
+    watches: HashMap<PathBuf, WatchMode>,
     watch_handles: BiHashMap<WatchDescriptor, PathBuf, (/* watch_self */ bool, /* is_dir */ bool)>,
     rename_event: Option<Event>,
     follow_links: bool,
@@ -53,7 +53,7 @@ pub struct INotifyWatcher {
 }
 
 enum EventLoopMsg {
-    AddWatch(PathBuf, RecursiveMode, Sender<Result<()>>),
+    AddWatch(PathBuf, WatchMode, Sender<Result<()>>),
     RemoveWatch(PathBuf, Sender<Result<()>>),
     Shutdown,
     Configure(Config, BoundSender<Result<bool>>),
@@ -65,13 +65,13 @@ enum EventLoopMsg {
 fn add_watch_by_event(
     path: &PathBuf,
     is_file_without_hardlinks: bool,
-    watches: &HashMap<PathBuf, RecursiveMode>,
+    watches: &HashMap<PathBuf, WatchMode>,
     add_watches: &mut Vec<(PathBuf, bool, bool)>,
 ) {
-    if let Some(recursive_mode) = watches.get(path) {
+    if let Some(watch_mode) = watches.get(path) {
         add_watches.push((
             path.to_owned(),
-            recursive_mode.is_recursive(),
+            watch_mode.recursive_mode.is_recursive(),
             is_file_without_hardlinks,
         ));
         return;
@@ -80,10 +80,10 @@ fn add_watch_by_event(
     let Some(parent) = path.parent() else {
         return;
     };
-    if let Some(recursive_mode) = watches.get(parent) {
+    if let Some(watch_mode) = watches.get(parent) {
         add_watches.push((
             path.to_owned(),
-            recursive_mode.is_recursive(),
+            watch_mode.recursive_mode.is_recursive(),
             is_file_without_hardlinks,
         ));
         return;
@@ -91,7 +91,9 @@ fn add_watch_by_event(
 
     let mut current = parent;
     while let Some(parent) = current.parent() {
-        if let Some(RecursiveMode::Recursive) = watches.get(parent) {
+        if let Some(watch_mode) = watches.get(parent)
+            && watch_mode.recursive_mode == RecursiveMode::Recursive
+        {
             add_watches.push((path.to_owned(), true, is_file_without_hardlinks));
             return;
         }
@@ -192,8 +194,8 @@ impl EventLoop {
     fn handle_messages(&mut self) {
         while let Ok(msg) = self.event_loop_rx.try_recv() {
             match msg {
-                EventLoopMsg::AddWatch(path, recursive_mode, tx) => {
-                    let _ = tx.send(self.add_watch(path, recursive_mode));
+                EventLoopMsg::AddWatch(path, watch_mode, tx) => {
+                    let _ = tx.send(self.add_watch(path, watch_mode));
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
                     let _ = tx.send(self.remove_watch(path));
@@ -319,6 +321,11 @@ impl EventLoop {
                                 );
                             }
                             if event.mask.contains(EventMask::MOVE_SELF) {
+                                remove_watch_by_event(
+                                    &path,
+                                    &self.watch_handles,
+                                    &mut remove_watches,
+                                );
                                 evs.push(
                                     Event::new(EventKind::Modify(ModifyKind::Name(
                                         RenameMode::From,
@@ -446,7 +453,13 @@ impl EventLoop {
         }
 
         for path in remove_watches {
-            self.watches.remove(&path);
+            if self
+                .watches
+                .get(&path)
+                .is_some_and(|watch_mode| watch_mode.target_mode == TargetMode::NoTrack)
+            {
+                self.watches.remove(&path);
+            }
             self.remove_maybe_recursive_watch(path, true).ok();
         }
 
@@ -469,12 +482,21 @@ impl EventLoop {
         }
     }
 
-    fn add_watch(&mut self, path: PathBuf, recursive_mode: RecursiveMode) -> Result<()> {
+    fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
         if let Some(existing) = self.watches.get(&path) {
-            let need_upgrade_to_recursive = match *existing {
+            let need_upgrade_to_recursive = match existing.recursive_mode {
                 RecursiveMode::Recursive => false,
-                RecursiveMode::NonRecursive => recursive_mode == RecursiveMode::Recursive,
+                RecursiveMode::NonRecursive => {
+                    watch_mode.recursive_mode == RecursiveMode::Recursive
+                }
             };
+            let need_to_watch_parent_newly = match existing.target_mode {
+                TargetMode::TrackPath => false,
+                TargetMode::NoTrack => watch_mode.target_mode == TargetMode::TrackPath,
+            };
+            if need_to_watch_parent_newly && let Some(parent) = path.parent() {
+                self.add_single_watch(parent.to_path_buf(), true, false)?;
+            }
             if !need_upgrade_to_recursive {
                 return Ok(());
             }
@@ -483,21 +505,41 @@ impl EventLoop {
             if metadata(&path).map_err(Error::io)?.is_dir() {
                 self.add_maybe_recursive_watch(path.clone(), true, false, true)?;
             }
-            *self.watches.get_mut(&path).unwrap() = RecursiveMode::Recursive;
+            self.watches
+                .get_mut(&path)
+                .unwrap()
+                .upgrade_with(watch_mode);
             return Ok(());
         }
 
-        let meta = metadata(&path).map_err(Error::io_watch)?;
+        if watch_mode.target_mode == TargetMode::TrackPath
+            && let Some(parent) = path.parent()
+        {
+            self.add_single_watch(parent.to_path_buf(), true, false)?;
+        }
+
+        let meta = match metadata(&path).map_err(Error::io_watch) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                if watch_mode.target_mode == TargetMode::TrackPath
+                    && matches!(err.kind, ErrorKind::PathNotFound)
+                {
+                    self.watches.insert(path, watch_mode);
+                    return Ok(());
+                }
+                return Err(err);
+            }
+        };
         self.add_maybe_recursive_watch(
             path.clone(),
             // If the watch is not recursive, or if we determine (by stat'ing the path to get its
             // metadata) that the watched path is not a directory, add a single path watch.
-            recursive_mode.is_recursive() && meta.is_dir(),
+            watch_mode.recursive_mode.is_recursive() && meta.is_dir(),
             meta.is_file_without_hardlinks(),
-            true,
+            watch_mode.target_mode != TargetMode::TrackPath, // parent is watched, so no need to watch self
         )?;
 
-        self.watches.insert(path, recursive_mode);
+        self.watches.insert(path, watch_mode);
 
         Ok(())
     }
@@ -587,8 +629,8 @@ impl EventLoop {
     fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found().add_path(path)),
-            Some(recursive_mode) => {
-                self.remove_maybe_recursive_watch(path, recursive_mode.is_recursive())?;
+            Some(watch_mode) => {
+                self.remove_maybe_recursive_watch(path, watch_mode.recursive_mode.is_recursive())?;
             }
         }
         Ok(())
@@ -672,7 +714,7 @@ impl INotifyWatcher {
             p.join(path)
         };
         let (tx, rx) = unbounded();
-        let msg = EventLoopMsg::AddWatch(pb, watch_mode.recursive_mode, tx);
+        let msg = EventLoopMsg::AddWatch(pb, watch_mode, tx);
 
         // we expect the event loop to live and reply => unwraps must not panic
         self.channel.send(msg).unwrap();
@@ -764,7 +806,7 @@ mod tests {
 
     use super::{Config, Error, ErrorKind, Event, INotifyWatcher, Result, Watcher};
 
-    use crate::{config::WatchMode, test::*};
+    use crate::{RecursiveMode, TargetMode, config::WatchMode, test::*};
 
     fn watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
         channel()
@@ -923,6 +965,29 @@ mod tests {
         std::fs::File::create_new(&path).expect("create");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&path).create_file(),
+            expected(&path).access_open_any(),
+            expected(&path).access_close_write(),
+        ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn create_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+
+        watcher.watch_nonrecursively(&path);
+
+        std::fs::File::create_new(&path).expect("create");
+
+        rx.wait_ordered_exact([
             expected(&path).create_file(),
             expected(&path).access_open_any(),
             expected(&path).access_close_write(),
@@ -930,6 +995,53 @@ mod tests {
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn create_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, _) = watcher();
+
+        let path = tmpdir.path().join("entry");
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(Error {
+                paths: _,
+                kind: ErrorKind::PathNotFound
+            })
+        ));
+    }
+
+    #[test]
+    #[ignore = "TODO: not implemented"]
+    fn create_self_file_nested() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry/nested");
+
+        watcher.watch_nonrecursively(&path);
+
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create");
+        std::fs::File::create_new(&path).expect("create");
+
+        rx.wait_ordered_exact([
+            expected(&path).create_file(),
+            expected(&path).access_open_any(),
+            expected(&path).access_close_write(),
+        ]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -948,6 +1060,7 @@ mod tests {
         std::fs::File::create_new(&path).expect("create");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&nested1_dir).access_open_any().optional(),
             expected(&nested2_dir).access_open_any().optional(),
             expected(&path).create_file(),
@@ -956,8 +1069,13 @@ mod tests {
         ]);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), nested1_dir, nested2_dir])
-        );
+            HashSet::from([
+                tmpdir.parent_path_buf(),
+                tmpdir.to_path_buf(),
+                nested1_dir,
+                nested2_dir
+            ])
+        )
     }
 
     #[test]
@@ -972,6 +1090,7 @@ mod tests {
         std::fs::write(&path, b"123").expect("write");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&path).access_open_any(),
             expected(&path).modify_data_any().multiple(),
             expected(&path).access_close_write(),
@@ -979,7 +1098,7 @@ mod tests {
         .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf()])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -996,10 +1115,13 @@ mod tests {
         watcher.watch_recursively(&tmpdir);
         file.set_permissions(permissions).expect("set_permissions");
 
-        rx.wait_ordered_exact([expected(&path).modify_meta_any()]);
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&path).modify_meta_any(),
+        ]);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf()])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -1017,6 +1139,7 @@ mod tests {
         std::fs::rename(&path, &new_path).expect("rename");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
             expected([path, new_path]).rename_both(),
@@ -1025,8 +1148,86 @@ mod tests {
         .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn rename_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        watcher.watch_nonrecursively(&path);
+        let new_path = tmpdir.path().join("renamed");
+
+        std::fs::rename(&path, &new_path).expect("rename");
+
+        rx.wait_ordered_exact([
+            expected(&path).rename_from(),
+            expected(&new_path).rename_to(), // this can be removed
+            expected([&path, &new_path]).rename_both(), // this can be removed
+        ])
+        .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
         );
+
+        std::fs::rename(&new_path, &path).expect("rename2");
+
+        rx.wait_ordered_exact([
+            expected(&new_path).rename_from(), // this can be removed
+            expected(&path).rename_to(),
+            expected([&new_path, &path]).rename_both(), // this can be removed
+        ])
+        .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn rename_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        let new_path = tmpdir.path().join("renamed");
+
+        std::fs::rename(&path, &new_path).expect("rename");
+
+        rx.wait_ordered_exact([expected(&path).rename_from()])
+            .ensure_no_tail();
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([]));
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(Error {
+                paths: _,
+                kind: ErrorKind::PathNotFound
+            })
+        ));
     }
 
     #[test]
@@ -1040,10 +1241,13 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_ordered_exact([expected(&file).remove_file()]);
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&file).remove_file(),
+        ]);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf()])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -1058,11 +1262,47 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
+        rx.wait_ordered_exact([expected(&file).remove_file()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
+
+        std::fs::write(&file, "").expect("write");
+
+        rx.wait_ordered_exact([expected(&file).create_file()]);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn delete_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let file = tmpdir.path().join("file");
+        std::fs::write(&file, "").expect("write");
+
+        watcher.watch(
+            &file,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        std::fs::remove_file(&file).expect("remove");
+
         rx.wait_ordered_exact([
             expected(&file).modify_meta_any(),
             expected(&file).remove_file(),
         ]);
         assert_eq!(watcher.get_watch_handles(), HashSet::from([]));
+
+        std::fs::write(&file, "").expect("write");
+
+        rx.ensure_empty();
     }
 
     #[test]
@@ -1074,6 +1314,40 @@ mod tests {
         std::fs::write(&overwritten_file, "123").expect("write1");
 
         watcher.watch_nonrecursively(&tmpdir);
+
+        std::fs::File::create(&overwriting_file).expect("create");
+        std::fs::write(&overwriting_file, "321").expect("write2");
+        std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
+
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&overwriting_file).create_file(),
+            expected(&overwriting_file).access_open_any(),
+            expected(&overwriting_file).access_close_write(),
+            expected(&overwriting_file).access_open_any(),
+            expected(&overwriting_file).modify_data_any().multiple(),
+            expected(&overwriting_file).access_close_write().multiple(),
+            expected(&overwriting_file).rename_from(),
+            expected(&overwritten_file).rename_to(),
+            expected([&overwriting_file, &overwritten_file]).rename_both(),
+        ])
+        .ensure_no_tail()
+        .ensure_trackers_len(1);
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn create_self_write_overwrite() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let overwritten_file = tmpdir.path().join("overwritten_file");
+        let overwriting_file = tmpdir.path().join("overwriting_file");
+        std::fs::write(&overwritten_file, "123").expect("write1");
+
+        watcher.watch_nonrecursively(&overwritten_file);
 
         std::fs::File::create(&overwriting_file).expect("create");
         std::fs::write(&overwriting_file, "321").expect("write2");
@@ -1099,6 +1373,35 @@ mod tests {
     }
 
     #[test]
+    fn create_self_write_overwrite_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let overwritten_file = tmpdir.path().join("overwritten_file");
+        let overwriting_file = tmpdir.path().join("overwriting_file");
+        std::fs::write(&overwritten_file, "123").expect("write1");
+
+        watcher.watch(
+            &overwritten_file,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        std::fs::File::create(&overwriting_file).expect("create");
+        std::fs::write(&overwriting_file, "321").expect("write2");
+        std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
+
+        rx.wait_ordered_exact([
+            expected(&overwritten_file).modify_meta_any(),
+            expected(&overwritten_file).remove_file(),
+        ])
+        .ensure_no_tail()
+        .ensure_trackers_len(0);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([]));
+    }
+
+    #[test]
     fn create_dir() {
         let tmpdir = testdir();
         let (mut watcher, mut rx) = watcher();
@@ -1107,10 +1410,13 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create");
 
-        rx.wait_ordered_exact([expected(&path).create_folder()]);
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&path).create_folder(),
+        ]);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), path])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), path])
         );
     }
 
@@ -1128,6 +1434,7 @@ mod tests {
         std::fs::set_permissions(&path, permissions).expect("set_permissions");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&path).access_open_any().optional(),
             expected(&path).modify_meta_any(),
             expected(&path).modify_meta_any(),
@@ -1135,7 +1442,7 @@ mod tests {
         .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), path])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), path])
         );
     }
 
@@ -1153,6 +1460,7 @@ mod tests {
         std::fs::rename(&path, &new_path).expect("rename");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&path).access_open_any().optional(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
@@ -1161,7 +1469,7 @@ mod tests {
         .ensure_trackers_len(1);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), new_path])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), new_path])
         );
     }
 
@@ -1177,6 +1485,29 @@ mod tests {
         std::fs::remove_dir(&path).expect("remove");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&path).access_open_any().optional(),
+            expected(&path).remove_folder(),
+        ])
+        .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
+        );
+    }
+
+    #[test]
+    fn delete_self_dir() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::create_dir(&path).expect("create_dir");
+
+        watcher.watch_recursively(&path);
+        std::fs::remove_dir(&path).expect("remove");
+
+        rx.wait_ordered_exact([
             expected(&path).access_open_any().optional(),
             expected(&path).remove_folder(),
         ])
@@ -1185,6 +1516,47 @@ mod tests {
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
         );
+
+        std::fs::create_dir(&path).expect("create_dir2");
+
+        rx.wait_ordered_exact([
+            expected(&path).access_open_any().optional(),
+            expected(&path).create_folder(),
+        ])
+        .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), path.clone()])
+        );
+    }
+
+    #[test]
+    fn delete_self_dir_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::create_dir(&path).expect("create_dir");
+
+        watcher
+            .watcher
+            .watch(
+                &path,
+                WatchMode {
+                    recursive_mode: RecursiveMode::Recursive,
+                    target_mode: TargetMode::NoTrack,
+                },
+            )
+            .expect("watch");
+        std::fs::remove_dir(&path).expect("remove");
+
+        rx.wait_ordered_exact([expected(&path).remove_folder()])
+            .ensure_no_tail();
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([]));
+
+        std::fs::create_dir(&path).expect("create_dir2");
+
+        rx.ensure_empty();
     }
 
     #[test]
@@ -1202,6 +1574,7 @@ mod tests {
         std::fs::rename(&new_path, &new_path2).expect("rename2");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&path).access_open_any().optional(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
@@ -1214,7 +1587,7 @@ mod tests {
         .ensure_trackers_len(2);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), new_path2])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), new_path2])
         );
     }
 
@@ -1233,12 +1606,18 @@ mod tests {
 
         std::fs::rename(&path, &new_path).expect("rename");
 
-        let event = rx.recv();
-        let tracker = event.attrs.tracker();
-        assert_eq!(event, expected(path).rename_from());
-        assert!(tracker.is_some(), "tracker is none: [event:#?]");
-        rx.ensure_empty();
-        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
+        rx.wait_ordered_exact([
+            expected(&subdir).access_open_any(),
+            expected(&path).rename_from(),
+            expected(&new_path).rename_to(), // this can be removed
+            expected([&path, &new_path]).rename_both(), // this can be removed
+        ])
+        .ensure_trackers_len(1)
+        .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), subdir])
+        );
     }
 
     #[test]
@@ -1259,6 +1638,7 @@ mod tests {
         std::fs::remove_file(&new_path).expect("remove");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&file1).create_file(),
             expected(&file1).access_open_any(),
             expected(&file1).modify_data_any().multiple(),
@@ -1277,7 +1657,7 @@ mod tests {
         ]);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf()])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -1297,6 +1677,7 @@ mod tests {
         std::fs::rename(&new_path1, &new_path2).expect("rename2");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&path).access_open_any().optional(),
             expected(&path).rename_from(),
             expected(&new_path1).rename_to(),
@@ -1310,7 +1691,7 @@ mod tests {
         .ensure_trackers_len(2);
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf()])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -1331,11 +1712,14 @@ mod tests {
         )
         .expect("set_time");
 
-        assert_eq!(rx.recv(), expected(&path).modify_data_any());
-        rx.ensure_empty();
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&path).modify_data_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf()])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
         );
     }
 
@@ -1357,7 +1741,10 @@ mod tests {
             expected(&path).access_close_write(),
         ])
         .ensure_no_tail();
-        assert_eq!(watcher.get_watch_handles(), HashSet::from([path]));
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
     }
 
     #[test]
@@ -1374,6 +1761,7 @@ mod tests {
         std::fs::File::create(&file).expect("create");
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
             expected(&subdir).access_open_any().optional(),
             expected(&file).create_file(),
             expected(&file).access_open_any(),
@@ -1382,7 +1770,7 @@ mod tests {
         .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([tmpdir.to_path_buf(), subdir])
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), subdir])
         );
 
         // TODO: https://github.com/rolldown/notify/issues/8
@@ -1405,10 +1793,12 @@ mod tests {
         let (mut watcher, mut rx) = watcher();
 
         let subdir = tmpdir.path().join("subdir");
+        let subdir2 = tmpdir.path().join("subdir2");
         let file = subdir.join("file");
-        let hardlink = tmpdir.path().join("hardlink");
+        let hardlink = subdir2.join("hardlink");
 
         std::fs::create_dir(&subdir).expect("create");
+        std::fs::create_dir(&subdir2).expect("create2");
         std::fs::write(&file, "").expect("file");
         std::fs::hard_link(&file, &hardlink).expect("hardlink");
 
@@ -1421,7 +1811,7 @@ mod tests {
             expected(&file).modify_data_any().multiple(),
             expected(&file).access_close_write(),
         ]);
-        assert_eq!(watcher.get_watch_handles(), HashSet::from([file]));
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir, file]));
     }
 
     #[test]
@@ -1445,11 +1835,15 @@ mod tests {
         std::fs::write(&hardlink, "123123").expect("write to the hard link");
 
         rx.wait_ordered_exact([
+            expected(&subdir2).access_open_any().optional(),
             expected(&file).access_open_any(),
             expected(&file).modify_data_any().multiple(),
             expected(&file).access_close_write(),
         ]);
-        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir2, file]));
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([subdir1, subdir2, file])
+        );
     }
 
     #[test]
@@ -1458,10 +1852,12 @@ mod tests {
         let (mut watcher, mut rx) = watcher();
 
         let subdir = tmpdir.path().join("subdir");
+        let subdir2 = tmpdir.path().join("subdir2");
         let file = subdir.join("file");
-        let hardlink = tmpdir.path().join("hardlink");
+        let hardlink = subdir2.join("hardlink");
 
         std::fs::create_dir(&subdir).expect("create");
+        std::fs::create_dir(&subdir2).expect("create");
         std::fs::write(&file, "").expect("file");
         std::fs::hard_link(&file, &hardlink).expect("hardlink");
 
@@ -1469,9 +1865,12 @@ mod tests {
 
         std::fs::write(&hardlink, "123123").expect("write to the hard link");
 
-        let events = rx.iter().collect::<Vec<_>>();
-        assert!(events.is_empty(), "unexpected events: {events:#?}");
-        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
+        rx.wait_ordered_exact([expected(&subdir).access_open_any().optional()])
+            .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), subdir])
+        );
     }
 
     #[test]
