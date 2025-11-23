@@ -75,13 +75,15 @@ pub enum TargetMode {
     /// (e.g., by a move/rename operation), the watch continues to monitor the new entity
     /// that now occupies the path.
     ///
-    /// TODO: This is not yet implemented. Currently, all backends expect for inotify behave as NoTrack.
+    /// TODO: watching nested non-existent paths is not implemented yet. <https://github.com/rolldown/notify/issues/32>
     TrackPath,
 
     /// Does not track the file path, nor the physical entity.
     ///
     /// If the underlying physical entity (inode/File ID) is replaced
     /// (e.g., by a move/rename operation), the watch stops monitoring.
+    ///
+    /// TODO: fsevents backend and Windows backend does not unwatch on physical entity change yet. <https://github.com/rolldown/notify/issues/33>
     NoTrack,
 }
 
