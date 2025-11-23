@@ -675,7 +675,7 @@ impl Drop for PollWatcher {
 #[cfg(test)]
 mod tests {
     use super::PollWatcher;
-    use crate::test::*;
+    use crate::{Error, ErrorKind, RecursiveMode, TargetMode, WatchMode, Watcher, test::*};
 
     fn watcher() -> (TestWatcher<PollWatcher>, Receiver) {
         poll_watcher_channel()
@@ -698,6 +698,62 @@ mod tests {
 
         rx.sleep_until_exists(&path);
         rx.wait_ordered_exact([expected(&path).create_any()]);
+    }
+
+    #[test]
+    #[ignore = "not implemented"]
+    fn create_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+
+        watcher.watch_nonrecursively(&path);
+
+        std::fs::File::create_new(&path).expect("create");
+
+        rx.sleep_until_exists(&path);
+        rx.wait_ordered_exact([expected(&path).create_any()]);
+    }
+
+    #[test]
+    #[ignore = "not implemented"]
+    fn create_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, _) = watcher();
+
+        let path = tmpdir.path().join("entry");
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(Error {
+                paths: _,
+                kind: ErrorKind::PathNotFound
+            })
+        ));
+    }
+
+    #[test]
+    #[ignore = "TODO: not implemented"]
+    fn create_self_file_nested() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry/nested");
+
+        watcher.watch_nonrecursively(&path);
+
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create");
+        std::fs::File::create_new(&path).expect("create");
+
+        rx.wait_ordered_exact([expected(&path).create_file()]);
     }
 
     #[test]
@@ -731,20 +787,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_file() {
-        let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
-        let path = tmpdir.path().join("entry");
-        std::fs::File::create_new(&path).expect("Unable to create");
-
-        watcher.watch_recursively(&tmpdir);
-        std::fs::remove_file(&path).expect("Unable to remove");
-
-        rx.sleep_while_exists(&path);
-        rx.wait_ordered_exact([expected(&path).remove_any()]);
-    }
-
-    #[test]
     fn rename_file() {
         let tmpdir = testdir();
         let (mut watcher, mut rx) = watcher();
@@ -762,6 +804,139 @@ mod tests {
             expected(&path).remove_any(),
             expected(&new_path).create_any(),
         ]);
+    }
+
+    #[test]
+    #[ignore = "TODO: not implemented"]
+    fn rename_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        watcher.watch_nonrecursively(&path);
+        let new_path = tmpdir.path().join("renamed");
+
+        std::fs::rename(&path, &new_path).expect("rename");
+
+        rx.sleep_while_exists(&path);
+        rx.sleep_until_exists(&new_path);
+
+        rx.wait_unordered_exact([expected(&path).remove_any()])
+            .ensure_no_tail();
+
+        std::fs::rename(&new_path, &path).expect("rename2");
+
+        rx.sleep_until_exists(&new_path);
+        rx.sleep_while_exists(&path);
+
+        rx.wait_unordered_exact([expected(&path).create_any()])
+            .ensure_no_tail();
+    }
+
+    #[test]
+    #[ignore = "TODO: not implemented"]
+    fn rename_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        let new_path = tmpdir.path().join("renamed");
+
+        std::fs::rename(&path, &new_path).expect("rename");
+
+        rx.sleep_while_exists(&path);
+        rx.sleep_until_exists(&new_path);
+
+        rx.wait_unordered_exact([expected(&path).remove_any()])
+            .ensure_no_tail();
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(Error {
+                paths: _,
+                kind: ErrorKind::PathNotFound
+            })
+        ));
+    }
+
+    #[test]
+    fn delete_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("Unable to create");
+
+        watcher.watch_recursively(&tmpdir);
+        std::fs::remove_file(&path).expect("Unable to remove");
+
+        rx.sleep_while_exists(&path);
+        rx.wait_ordered_exact([expected(&path).remove_any()]);
+    }
+
+    #[test]
+    #[ignore = "TODO: not implemented"]
+    fn delete_self_file() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("Unable to create");
+
+        watcher.watch_nonrecursively(&path);
+
+        std::fs::remove_file(&path).expect("Unable to remove");
+
+        rx.sleep_while_exists(&path);
+        rx.wait_ordered_exact([expected(&path).remove_any()]);
+
+        std::fs::write(&path, "").expect("write");
+
+        rx.sleep_until_exists(&path);
+        rx.wait_ordered_exact([expected(&path).create_file()]);
+    }
+
+    #[test]
+    #[ignore = "TODO: not implemented"]
+    fn delete_self_file_no_track() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let path = tmpdir.path().join("entry");
+        std::fs::File::create_new(&path).expect("Unable to create");
+
+        watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        std::fs::remove_file(&path).expect("Unable to remove");
+
+        rx.sleep_while_exists(&path);
+        rx.wait_ordered_exact([expected(&path).remove_any()]);
+
+        std::fs::write(&path, "").expect("write");
+
+        rx.ensure_empty_with_wait();
     }
 
     #[test]
