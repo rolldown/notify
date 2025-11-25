@@ -89,9 +89,12 @@ impl EventLoop {
 
     // Run the event loop.
     pub fn run(self) {
-        let _ = thread::Builder::new()
+        let result = thread::Builder::new()
             .name("notify-rs kqueue loop".to_string())
             .spawn(|| self.event_loop_thread());
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to start kqueue event loop thread");
+        }
     }
 
     fn event_loop_thread(mut self) {
@@ -138,13 +141,22 @@ impl EventLoop {
         while let Ok(msg) = self.event_loop_rx.try_recv() {
             match msg {
                 EventLoopMsg::AddWatch(path, watch_mode, tx) => {
-                    let _ = tx.send(self.add_watch(path, watch_mode));
+                    let result = tx.send(self.add_watch(path, watch_mode));
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to send AddWatch result");
+                    }
                 }
                 EventLoopMsg::AddWatchMultiple(paths, tx) => {
-                    let _ = tx.send(self.add_watch_multiple(paths));
+                    let result = tx.send(self.add_watch_multiple(paths));
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to send AddWatchMultiple result");
+                    }
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
-                    let _ = tx.send(self.remove_watch(path));
+                    let result = tx.send(self.remove_watch(path));
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to send RemoveWatch result");
+                    }
                 }
                 EventLoopMsg::Shutdown => {
                     self.running = false;
@@ -188,7 +200,7 @@ impl EventLoop {
         let mut remove_watches = Vec::new();
 
         while let Some(event) = self.kqueue.poll(None) {
-            tracing::trace!("kqueue event: {event:?}");
+            tracing::trace!(?event, "kqueue event received");
 
             match event {
                 kqueue::Event {
@@ -216,6 +228,7 @@ impl EventLoop {
                                         // in that case, emit a create event for the new file
                                         let is_dir = metadata.is_dir();
                                         add_watches.push((path.clone(), is_dir));
+                                        tracing::trace!("overwrite detected: {}", path.display());
                                         self.event_handler.handle_event(Ok(remove_event));
                                         Some(Ok(Event::new(EventKind::Create(if is_dir {
                                             CreateKind::Folder
@@ -245,6 +258,10 @@ impl EventLoop {
                                             .find(|f| !self.watch_handles.contains(f))
                                     })
                                     .map(|file| {
+                                        tracing::trace!(
+                                            "new file detected: {:?}",
+                                            file.as_ref().map(|f| f.display())
+                                        );
                                         if let Some(file) = file {
                                             let metadata = file.metadata();
                                             let is_dir = metadata
@@ -385,6 +402,12 @@ impl EventLoop {
             }
         }
 
+        tracing::trace!(
+            ?add_watches,
+            ?remove_watches,
+            "processing kqueue watch changes"
+        );
+
         for path in remove_watches {
             if self
                 .watches
@@ -412,6 +435,7 @@ impl EventLoop {
         self.kqueue.watch().unwrap();
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
         self.add_watch_inner(path, watch_mode)?;
 
@@ -421,6 +445,7 @@ impl EventLoop {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch_multiple(&mut self, paths: Vec<(PathBuf, WatchMode)>) -> Result<()> {
         for (path, watch_mode) in paths {
             self.add_watch_inner(path, watch_mode)?;
@@ -433,6 +458,7 @@ impl EventLoop {
     }
 
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch_inner(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
         if let Some(existing) = self.watches.get(&path) {
             let need_upgrade_to_recursive = match existing.recursive_mode {
@@ -445,6 +471,12 @@ impl EventLoop {
                 TargetMode::TrackPath => false,
                 TargetMode::NoTrack => watch_mode.target_mode == TargetMode::TrackPath,
             };
+            tracing::trace!(
+                ?need_to_watch_parent_newly,
+                ?need_upgrade_to_recursive,
+                "upgrading existing watch for path: {}",
+                path.display()
+            );
             if need_to_watch_parent_newly && let Some(parent) = path.parent() {
                 self.add_single_watch(parent.to_path_buf())?;
             }
@@ -495,6 +527,7 @@ impl EventLoop {
     }
 
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_maybe_recursive_watch(
         &mut self,
         path: PathBuf,
@@ -525,8 +558,10 @@ impl EventLoop {
     /// Adds a single watch to the kqueue.
     ///
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_single_watch(&mut self, path: PathBuf) -> Result<()> {
         if self.watch_handles.contains(&path) {
+            tracing::trace!("watch handle already exists: {}", path.display());
             return Ok(());
         }
 
@@ -549,9 +584,8 @@ impl EventLoop {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
-        tracing::trace!("removing kqueue watch: {}", path.display());
-
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found()),
             Some(watch_mode) => {
@@ -564,6 +598,7 @@ impl EventLoop {
     }
 
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn remove_maybe_recursive_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<()> {
         if is_recursive {
             self.remove_single_watch(path.clone())?;
@@ -586,7 +621,10 @@ impl EventLoop {
     /// Removes a single watch from the kqueue.
     ///
     /// The caller of this function must call `self.kqueue.watch()` afterwards to unregister the old watch.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn remove_single_watch(&mut self, path: PathBuf) -> Result<()> {
+        tracing::trace!("removing kqueue watch: {}", path.display());
+
         self.kqueue
             .remove_filename(&path, EventFilter::EVFILT_VNODE)
             .map_err(|e| Error::io(e).add_path(path.clone()))?;
@@ -622,15 +660,18 @@ impl<'a> KqueuePathsMut<'a> {
     }
 }
 impl PathsMut for KqueuePathsMut<'_> {
+    #[tracing::instrument(level = "debug", skip(self))]
     fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.add_paths.push((path.to_owned(), watch_mode));
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn remove(&mut self, path: &Path) -> Result<()> {
         self.inner.unwatch_inner(path)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn commit(self: Box<Self>) -> Result<()> {
         let paths = self.add_paths;
         self.inner.watch_multiple_inner(paths)
@@ -719,18 +760,22 @@ impl KqueueWatcher {
 
 impl Watcher for KqueueWatcher {
     /// Create a new watcher.
+    #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
         Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.watch_inner(path, watch_mode)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
         Box::new(KqueuePathsMut::new(self))
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn unwatch(&mut self, path: &Path) -> Result<()> {
         self.unwatch_inner(path)
     }
