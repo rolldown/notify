@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.8.0...rolldown-notify-debouncer-mini-v0.8.1) - 2025-11-25
+
+### Added
+
+- add tracing logs to remaining files ([#48](https://github.com/rolldown/notify/pull/48))
+
+### Other
+
+- use tracing instead of log ([#43](https://github.com/rolldown/notify/pull/43))
+
 ## [0.8.0](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.7.4...rolldown-notify-debouncer-mini-v0.8.0) - 2025-11-23
 
 ### Added

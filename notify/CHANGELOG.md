@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.0](https://github.com/rolldown/notify/compare/rolldown-notify-v9.0.0...rolldown-notify-v9.1.0) - 2025-11-25
+
+### Added
+
+- add tracing logs to remaining files ([#48](https://github.com/rolldown/notify/pull/48))
+- add tracing logs for fsevent backend ([#47](https://github.com/rolldown/notify/pull/47))
+- add tracing logs for kqueue backend ([#46](https://github.com/rolldown/notify/pull/46))
+- add tracing logs for Windows backend ([#45](https://github.com/rolldown/notify/pull/45))
+- add tracing logs for inotify backend ([#44](https://github.com/rolldown/notify/pull/44))
+
+### Fixed
+
+- filter out unrelated events for inotify & kqueue backend ([#38](https://github.com/rolldown/notify/pull/38))
+
+### Other
+
+- add optional modify_data_size event expects for kqueue ([#49](https://github.com/rolldown/notify/pull/49))
+- use tracing instead of log ([#43](https://github.com/rolldown/notify/pull/43))
+- tweak `upgrade_to_recursive` kqueue test to reduce flakiness ([#42](https://github.com/rolldown/notify/pull/42))
+- tweak `upgrade_to_recursive` kqueue test to reduce flakiness ([#41](https://github.com/rolldown/notify/pull/41))
+- add `upgrade_to_recursive` tests ([#40](https://github.com/rolldown/notify/pull/40))
+
 ## [9.0.0](https://github.com/rolldown/notify/compare/rolldown-notify-v8.2.4...rolldown-notify-v9.0.0) - 2025-11-23
 
 ### Added
