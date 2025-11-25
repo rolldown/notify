@@ -146,9 +146,12 @@ impl EventLoop {
 
     // Run the event loop.
     pub fn run(self) {
-        let _ = thread::Builder::new()
+        let result = thread::Builder::new()
             .name("notify-rs inotify loop".to_string())
             .spawn(|| self.event_loop_thread());
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to start inotify event loop thread");
+        }
     }
 
     fn event_loop_thread(mut self) {
@@ -195,15 +198,27 @@ impl EventLoop {
         while let Ok(msg) = self.event_loop_rx.try_recv() {
             match msg {
                 EventLoopMsg::AddWatch(path, watch_mode, tx) => {
-                    let _ = tx.send(self.add_watch(path, watch_mode));
+                    let result = tx.send(self.add_watch(path, watch_mode));
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to send AddWatch result");
+                    }
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
-                    let _ = tx.send(self.remove_watch(path));
+                    let result = tx.send(self.remove_watch(path));
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to send RemoveWatch result");
+                    }
                 }
                 EventLoopMsg::Shutdown => {
-                    let _ = self.remove_all_watches();
+                    let result = self.remove_all_watches();
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to remove all watches on shutdown");
+                    }
                     if let Some(inotify) = self.inotify.take() {
-                        let _ = inotify.close();
+                        let result = inotify.close();
+                        if let Err(e) = result {
+                            tracing::error!(?e, "failed to close inotify instance on shutdown");
+                        }
                     }
                     self.running = false;
                     break;
@@ -265,7 +280,7 @@ impl EventLoop {
                     Ok(events) => {
                         let mut num_events = 0;
                         for event in events {
-                            tracing::trace!("inotify event: {event:?}");
+                            tracing::trace!(?event, "inotify event received");
 
                             num_events += 1;
                             if event.mask.contains(EventMask::Q_OVERFLOW) {
@@ -288,7 +303,8 @@ impl EventLoop {
                                 Some(path) => path,
                                 None => {
                                     tracing::debug!(
-                                        "inotify event with unknown descriptor: {event:?}"
+                                        ?event,
+                                        "inotify event with unknown descriptor"
                                     );
                                     continue;
                                 }
@@ -508,6 +524,12 @@ impl EventLoop {
             }
         }
 
+        tracing::trace!(
+            ?add_watches,
+            ?remove_watches,
+            "processing inotify watch changes"
+        );
+
         for path in remove_watches {
             if self
                 .watches
@@ -538,6 +560,7 @@ impl EventLoop {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
         if let Some(existing) = self.watches.get(&path) {
             let need_upgrade_to_recursive = match existing.recursive_mode {
@@ -550,6 +573,12 @@ impl EventLoop {
                 TargetMode::TrackPath => false,
                 TargetMode::NoTrack => watch_mode.target_mode == TargetMode::TrackPath,
             };
+            tracing::trace!(
+                ?need_upgrade_to_recursive,
+                ?need_to_watch_parent_newly,
+                "upgrading existing watch for path: {}",
+                path.display()
+            );
             if need_to_watch_parent_newly && let Some(parent) = path.parent() {
                 self.add_single_watch(parent.to_path_buf(), true, false)?;
             }
@@ -586,6 +615,7 @@ impl EventLoop {
                 return Err(err);
             }
         };
+
         self.add_maybe_recursive_watch(
             path.clone(),
             // If the watch is not recursive, or if we determine (by stat'ing the path to get its
@@ -600,6 +630,7 @@ impl EventLoop {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_maybe_recursive_watch(
         &mut self,
         path: PathBuf,
@@ -622,6 +653,7 @@ impl EventLoop {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn add_single_watch(
         &mut self,
         path: PathBuf,
@@ -632,6 +664,10 @@ impl EventLoop {
             // if upgrade to watch self is not needed
             && (old_watch_self || !watch_self)
         {
+            tracing::trace!(
+                "watch handle already exists and no need to upgrade: {}",
+                path.display()
+            );
             return Ok(());
         }
 
@@ -639,6 +675,10 @@ impl EventLoop {
             && let Some(parent) = path.parent()
             && self.watch_handles.get_by_right(parent).is_some()
         {
+            tracing::trace!(
+                "parent dir watch handle already exists and is a file without hardlinks: {}",
+                path.display()
+            );
             return Ok(());
         }
 
@@ -682,6 +722,7 @@ impl EventLoop {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found().add_path(path)),
@@ -692,15 +733,16 @@ impl EventLoop {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn remove_maybe_recursive_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<()> {
         let Some(ref mut inotify) = self.inotify else {
             return Ok(());
         };
         let mut inotify_watches = inotify.watches();
 
-        tracing::trace!("removing inotify watch: {}", path.display());
-
         if let Some((handle, _)) = self.watch_handles.remove_by_right(&path) {
+            tracing::trace!("removing inotify watch: {}", path.display());
+
             inotify_watches
                 .remove(handle.clone())
                 .map_err(|e| Error::io(e).add_path(path.clone()))?;
@@ -797,18 +839,22 @@ impl INotifyWatcher {
 
 impl Watcher for INotifyWatcher {
     /// Create a new watcher.
+    #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
         Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.watch_inner(path, watch_mode)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn unwatch(&mut self, path: &Path) -> Result<()> {
         self.unwatch_inner(path)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn configure(&mut self, config: Config) -> Result<bool> {
         let (tx, rx) = bounded(1);
         self.channel.send(EventLoopMsg::Configure(config, tx))?;
