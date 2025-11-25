@@ -38,7 +38,7 @@ mod test {
 
         pub fn advance(delta: Duration) {
             NOW.with(|now| {
-                if let Some(n) = &mut *now.lock().unwrap() {
+                if let Some(n) = now.lock().unwrap().as_mut() {
                     *n += delta;
                 }
             });

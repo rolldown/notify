@@ -52,18 +52,21 @@ pub struct Error {
 
 impl Error {
     /// Adds a path to the error.
+    #[must_use]
     pub fn add_path(mut self, path: PathBuf) -> Self {
         self.paths.push(path);
         self
     }
 
     /// Replaces the paths for the error.
+    #[must_use]
     pub fn set_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.paths = paths;
         self
     }
 
     /// Creates a new Error with empty paths given its kind.
+    #[must_use]
     pub fn new(kind: ErrorKind) -> Self {
         Self {
             kind,
@@ -72,16 +75,19 @@ impl Error {
     }
 
     /// Creates a new generic Error from a message.
+    #[must_use]
     pub fn generic(msg: &str) -> Self {
         Self::new(ErrorKind::Generic(msg.into()))
     }
 
     /// Creates a new i/o Error from a stdlib `io::Error`.
+    #[must_use]
     pub fn io(err: io::Error) -> Self {
         Self::new(ErrorKind::Io(err))
     }
 
     /// Similar to [`Error::io`], but specifically handles [`io::ErrorKind::NotFound`].
+    #[must_use]
     pub fn io_watch(err: io::Error) -> Self {
         if err.kind() == io::ErrorKind::NotFound {
             Self::path_not_found()
@@ -91,16 +97,19 @@ impl Error {
     }
 
     /// Creates a new "path not found" error.
+    #[must_use]
     pub fn path_not_found() -> Self {
         Self::new(ErrorKind::PathNotFound)
     }
 
     /// Creates a new "watch not found" error.
+    #[must_use]
     pub fn watch_not_found() -> Self {
         Self::new(ErrorKind::WatchNotFound)
     }
 
     /// Creates a new "invalid config" error from the given `Config`.
+    #[must_use]
     pub fn invalid_config(config: &Config) -> Self {
         Self::new(ErrorKind::InvalidConfig(*config))
     }
@@ -111,14 +120,14 @@ impl fmt::Display for Error {
         let error = match self.kind {
             ErrorKind::PathNotFound => "No path was found.".into(),
             ErrorKind::WatchNotFound => "No watch was found.".into(),
-            ErrorKind::InvalidConfig(ref config) => format!("Invalid configuration: {:?}", config),
+            ErrorKind::InvalidConfig(ref config) => format!("Invalid configuration: {config:?}"),
             ErrorKind::Generic(ref err) => err.clone(),
             ErrorKind::Io(ref err) => err.to_string(),
             ErrorKind::MaxFilesWatch => "OS file watch limit reached.".into(),
         };
 
         if self.paths.is_empty() {
-            write!(f, "{}", error)
+            write!(f, "{error}")
         } else {
             write!(f, "{} about {:?}", error, self.paths)
         }
@@ -142,19 +151,19 @@ impl From<io::Error> for Error {
 
 impl<T> From<std::sync::mpsc::SendError<T>> for Error {
     fn from(err: std::sync::mpsc::SendError<T>) -> Self {
-        Error::generic(&format!("internal channel disconnect: {:?}", err))
+        Error::generic(&format!("internal channel disconnect: {err:?}"))
     }
 }
 
 impl From<std::sync::mpsc::RecvError> for Error {
     fn from(err: std::sync::mpsc::RecvError) -> Self {
-        Error::generic(&format!("internal channel disconnect: {:?}", err))
+        Error::generic(&format!("internal channel disconnect: {err:?}"))
     }
 }
 
 impl<T> From<std::sync::PoisonError<T>> for Error {
     fn from(err: std::sync::PoisonError<T>) -> Self {
-        Error::generic(&format!("internal mutex poisoned: {:?}", err))
+        Error::generic(&format!("internal mutex poisoned: {err:?}"))
     }
 }
 

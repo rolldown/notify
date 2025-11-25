@@ -20,6 +20,9 @@ name = "file_id"
 name = "file-id"
 path = "bin/file_id.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true, optional = true }
 

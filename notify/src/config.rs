@@ -13,6 +13,7 @@ pub struct WatchMode {
 
 impl WatchMode {
     /// Creates a WatchMode that watches directories recursively and tracks the file path
+    #[must_use]
     pub fn recursive() -> Self {
         Self {
             recursive_mode: RecursiveMode::Recursive,
@@ -21,6 +22,7 @@ impl WatchMode {
     }
 
     /// Creates a WatchMode that watches only the provided directory and tracks the file path
+    #[must_use]
     pub fn non_recursive() -> Self {
         Self {
             recursive_mode: RecursiveMode::NonRecursive,
@@ -45,6 +47,7 @@ pub enum RecursiveMode {
 }
 
 impl RecursiveMode {
+    #[expect(clippy::trivially_copy_pass_by_ref)]
     pub(crate) fn is_recursive(&self) -> bool {
         match *self {
             RecursiveMode::Recursive => true,
@@ -136,6 +139,7 @@ impl Config {
     /// The default poll frequency is 30 seconds.
     ///
     /// This will enable automatic polling, overwriting [`with_manual_polling()`](Config::with_manual_polling).
+    #[must_use]
     pub fn with_poll_interval(mut self, dur: Duration) -> Self {
         // TODO: v7.0 break signature to option
         self.poll_interval = Some(dur);
@@ -143,6 +147,7 @@ impl Config {
     }
 
     /// Returns current setting
+    #[must_use]
     pub fn poll_interval(&self) -> Option<Duration> {
         // Changed Signature to Option
         self.poll_interval
@@ -153,6 +158,7 @@ impl Config {
     /// Disable automatic polling. Requires calling [`crate::PollWatcher::poll()`] manually.
     ///
     /// This will disable automatic polling, overwriting [`with_poll_interval()`](Config::with_poll_interval).
+    #[must_use]
     pub fn with_manual_polling(mut self) -> Self {
         self.poll_interval = None;
         self
@@ -168,12 +174,14 @@ impl Config {
     /// need to be read and hashed at each `poll_interval`.
     ///
     /// This can't be changed during runtime. Off by default.
+    #[must_use]
     pub fn with_compare_contents(mut self, compare_contents: bool) -> Self {
         self.compare_contents = compare_contents;
         self
     }
 
     /// Returns current setting
+    #[must_use]
     pub fn compare_contents(&self) -> bool {
         self.compare_contents
     }
@@ -184,12 +192,14 @@ impl Config {
     /// Determine if symbolic links should be followed when recursively watching a directory.
     ///
     /// This can't be changed during runtime. On by default.
+    #[must_use]
     pub fn with_follow_symlinks(mut self, follow_symlinks: bool) -> Self {
         self.follow_symlinks = follow_symlinks;
         self
     }
 
     /// Returns current setting
+    #[must_use]
     pub fn follow_symlinks(&self) -> bool {
         self.follow_symlinks
     }

@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use std::io;
 
 use file_id::FileId;

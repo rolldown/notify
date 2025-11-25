@@ -247,26 +247,31 @@ pub enum EventKind {
 
 impl EventKind {
     /// Indicates whether an event is an Access variant.
+    #[must_use]
     pub fn is_access(&self) -> bool {
         matches!(self, EventKind::Access(_))
     }
 
     /// Indicates whether an event is a Create variant.
+    #[must_use]
     pub fn is_create(&self) -> bool {
         matches!(self, EventKind::Create(_))
     }
 
     /// Indicates whether an event is a Modify variant.
+    #[must_use]
     pub fn is_modify(&self) -> bool {
         matches!(self, EventKind::Modify(_))
     }
 
     /// Indicates whether an event is a Remove variant.
+    #[must_use]
     pub fn is_remove(&self) -> bool {
         matches!(self, EventKind::Remove(_))
     }
 
     /// Indicates whether an event is an Other variant.
+    #[must_use]
     pub fn is_other(&self) -> bool {
         matches!(self, EventKind::Other)
     }
@@ -421,26 +426,31 @@ struct EventAttributesInner {
 
 impl EventAttributes {
     /// Creates a new `EventAttributes`.
+    #[must_use]
     pub fn new() -> Self {
         Self { inner: None }
     }
 
     /// Retrieves the tracker ID for an event directly, if present.
+    #[must_use]
     pub fn tracker(&self) -> Option<usize> {
         self.inner.as_ref().and_then(|inner| inner.tracker)
     }
 
     /// Retrieves the Notify flag for an event directly, if present.
+    #[must_use]
     pub fn flag(&self) -> Option<Flag> {
         self.inner.as_ref().and_then(|inner| inner.flag)
     }
 
     /// Retrieves the additional info for an event directly, if present.
+    #[must_use]
     pub fn info(&self) -> Option<&str> {
         self.inner.as_ref().and_then(|inner| inner.info.as_deref())
     }
 
     /// Retrieves the source for an event directly, if present.
+    #[must_use]
     pub fn source(&self) -> Option<&str> {
         self.inner
             .as_ref()
@@ -451,6 +461,7 @@ impl EventAttributes {
     ///
     /// This attribute is experimental and, while included in Notify itself, is not considered
     /// stable or standard enough to be part of the serde, eq, hash, and debug representations.
+    #[must_use]
     pub fn process_id(&self) -> Option<u32> {
         self.inner.as_ref().and_then(|inner| inner.process_id)
     }
@@ -472,7 +483,7 @@ impl EventAttributes {
 
     /// Sets the process id onto the event.
     pub fn set_process_id(&mut self, process_id: u32) {
-        self.inner_mut().process_id = Some(process_id)
+        self.inner_mut().process_id = Some(process_id);
     }
 
     fn inner_mut(&mut self) -> &mut EventAttributesInner {
@@ -506,30 +517,36 @@ impl Event {
     /// folder might have been modified.
     ///
     /// See [`Flag::Rescan`] for more information.
+    #[must_use]
     pub fn need_rescan(&self) -> bool {
         matches!(self.flag(), Some(Flag::Rescan))
     }
     /// Retrieves the tracker ID for an event directly, if present.
+    #[must_use]
     pub fn tracker(&self) -> Option<usize> {
         self.attrs.tracker()
     }
 
     /// Retrieves the Notify flag for an event directly, if present.
+    #[must_use]
     pub fn flag(&self) -> Option<Flag> {
         self.attrs.flag()
     }
 
     /// Retrieves the additional info for an event directly, if present.
+    #[must_use]
     pub fn info(&self) -> Option<&str> {
         self.attrs.info()
     }
 
     /// Retrieves the source for an event directly, if present.
+    #[must_use]
     pub fn source(&self) -> Option<&str> {
         self.attrs.source()
     }
 
     /// Creates a new `Event` given a kind.
+    #[must_use]
     pub fn new(kind: EventKind) -> Self {
         Self {
             kind,
@@ -539,18 +556,21 @@ impl Event {
     }
 
     /// Sets the kind.
+    #[must_use]
     pub fn set_kind(mut self, kind: EventKind) -> Self {
         self.kind = kind;
         self
     }
 
     /// Adds a path to the event.
+    #[must_use]
     pub fn add_path(mut self, path: PathBuf) -> Self {
         self.paths.push(path);
         self
     }
 
     /// Adds a path to the event if the argument is Some.
+    #[must_use]
     pub fn add_some_path(self, path: Option<PathBuf>) -> Self {
         if let Some(path) = path {
             self.add_path(path)
@@ -560,30 +580,38 @@ impl Event {
     }
 
     /// Sets the tracker.
+    #[must_use]
     pub fn set_tracker(mut self, tracker: usize) -> Self {
         self.attrs.set_tracker(tracker);
         self
     }
 
     /// Sets additional info onto the event.
+    #[must_use]
     pub fn set_info(mut self, info: &str) -> Self {
         self.attrs.set_info(info);
         self
     }
 
     /// Sets the Notify flag onto the event.
+    #[must_use]
     pub fn set_flag(mut self, flag: Flag) -> Self {
         self.attrs.set_flag(flag);
         self
     }
 
     /// Sets the process id onto the event.
+    #[must_use]
     pub fn set_process_id(mut self, process_id: u32) -> Self {
         self.attrs.set_process_id(process_id);
         self
     }
 }
 
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "attr fields are shown individually"
+)]
 impl fmt::Debug for Event {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Event")

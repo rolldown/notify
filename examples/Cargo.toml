@@ -5,6 +5,9 @@ publish = false
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 rolldown-notify = { workspace = true }
 rolldown-notify-debouncer-mini = { workspace = true }

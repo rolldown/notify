@@ -106,7 +106,7 @@ impl EventLoop {
                     // System call was interrupted, we will retry
                     // TODO: Not covered by tests (to reproduce likely need to setup signal handlers)
                 }
-                Err(e) => panic!("poll failed: {}", e),
+                Err(e) => panic!("poll failed: {e}"),
                 Ok(()) => {}
             }
 
@@ -127,11 +127,11 @@ impl EventLoop {
         match event.token() {
             MESSAGE => {
                 // The channel is readable - handle messages.
-                self.handle_messages()
+                self.handle_messages();
             }
             KQUEUE => {
                 // inotify has something to tell us.
-                self.handle_kqueue()
+                self.handle_kqueue();
             }
             _ => unreachable!(),
         }
@@ -153,7 +153,7 @@ impl EventLoop {
                     }
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
-                    let result = tx.send(self.remove_watch(path));
+                    let result = tx.send(self.remove_watch(&path));
                     if let Err(e) = result {
                         tracing::error!(?e, "failed to send RemoveWatch result");
                     }
@@ -195,6 +195,7 @@ impl EventLoop {
         false
     }
 
+    #[expect(clippy::too_many_lines)]
     fn handle_kqueue(&mut self) {
         let mut add_watches = Vec::new();
         let mut remove_watches = Vec::new();
@@ -264,10 +265,8 @@ impl EventLoop {
                                         );
                                         if let Some(file) = file {
                                             let metadata = file.metadata();
-                                            let is_dir = metadata
-                                                .as_ref()
-                                                .map(|m| m.is_dir())
-                                                .unwrap_or_default();
+                                            let is_dir =
+                                                metadata.as_ref().is_ok_and(|m| m.is_dir());
                                             if Self::is_watched_path(&self.watches, &file) {
                                                 // watch this new file
                                                 add_watches.push((file.clone(), is_dir));
@@ -275,10 +274,7 @@ impl EventLoop {
                                                 Some(
                                                     Event::new(EventKind::Create(if is_dir {
                                                         CreateKind::Folder
-                                                    } else if metadata
-                                                        .map(|m| m.is_file())
-                                                        .unwrap_or_default()
-                                                    {
+                                                    } else if metadata.is_ok_and(|m| m.is_file()) {
                                                         CreateKind::File
                                                     } else {
                                                         CreateKind::Other
@@ -390,7 +386,6 @@ impl EventLoop {
                             }
 
                             // On different BSD variants, different extra events may be present
-                            #[allow(unreachable_patterns)]
                             _ => Some(Ok(Event::new(EventKind::Other))),
                         };
                     if let Some(event) = event {
@@ -416,7 +411,7 @@ impl EventLoop {
             {
                 self.watches.remove(&path);
             }
-            self.remove_maybe_recursive_watch(path, true).ok();
+            self.remove_maybe_recursive_watch(&path, true).ok();
         }
 
         for (path, is_dir) in add_watches {
@@ -535,10 +530,7 @@ impl EventLoop {
         is_dir: bool,
     ) -> Result<()> {
         if is_recursive {
-            for entry in WalkDir::new(&path)
-                .follow_links(self.follow_symlinks)
-                .into_iter()
-            {
+            for entry in WalkDir::new(&path).follow_links(self.follow_symlinks) {
                 let entry = entry.map_err(map_walkdir_error)?;
                 self.add_single_watch(entry.into_path())?;
             }
@@ -585,8 +577,8 @@ impl EventLoop {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
-        match self.watches.remove(&path) {
+    fn remove_watch(&mut self, path: &Path) -> Result<()> {
+        match self.watches.remove(path) {
             None => return Err(Error::watch_not_found()),
             Some(watch_mode) => {
                 self.remove_maybe_recursive_watch(path, watch_mode.recursive_mode.is_recursive())?;
@@ -599,21 +591,18 @@ impl EventLoop {
 
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
     #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_maybe_recursive_watch(&mut self, path: PathBuf, is_recursive: bool) -> Result<()> {
+    fn remove_maybe_recursive_watch(&mut self, path: &Path, is_recursive: bool) -> Result<()> {
         if is_recursive {
-            self.remove_single_watch(path.clone())?;
-            for entry in WalkDir::new(&path)
-                .follow_links(self.follow_symlinks)
-                .into_iter()
-            {
+            self.remove_single_watch(path)?;
+            for entry in WalkDir::new(path).follow_links(self.follow_symlinks) {
                 let entry = entry.map_err(map_walkdir_error)?;
                 if entry.path() == path {
                     continue;
                 }
-                self.remove_single_watch(entry.into_path())?;
+                self.remove_single_watch(entry.path())?;
             }
         } else {
-            self.remove_single_watch(path.clone())?;
+            self.remove_single_watch(path)?;
         }
         Ok(())
     }
@@ -622,13 +611,13 @@ impl EventLoop {
     ///
     /// The caller of this function must call `self.kqueue.watch()` afterwards to unregister the old watch.
     #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_single_watch(&mut self, path: PathBuf) -> Result<()> {
+    fn remove_single_watch(&mut self, path: &Path) -> Result<()> {
         tracing::trace!("removing kqueue watch: {}", path.display());
 
         self.kqueue
-            .remove_filename(&path, EventFilter::EVFILT_VNODE)
-            .map_err(|e| Error::io(e).add_path(path.clone()))?;
-        self.watch_handles.remove(&path);
+            .remove_filename(path, EventFilter::EVFILT_VNODE)
+            .map_err(|e| Error::io(e).add_path(path.to_path_buf()))?;
+        self.watch_handles.remove(path);
         Ok(())
     }
 }
@@ -686,12 +675,12 @@ impl KqueueWatcher {
         let kqueue = kqueue::Watcher::new()?;
         let event_loop = EventLoop::new(kqueue, event_handler, follow_symlinks)?;
         let channel = event_loop.event_loop_tx.clone();
-        let waker = event_loop.event_loop_waker.clone();
+        let waker = Arc::clone(&event_loop.event_loop_waker);
         event_loop.run();
         Ok(KqueueWatcher { channel, waker })
     }
 
-    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+    fn watch_inner(&self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         let pb = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -710,7 +699,7 @@ impl KqueueWatcher {
         rx.recv().unwrap()
     }
 
-    fn watch_multiple_inner(&mut self, paths: Vec<(PathBuf, WatchMode)>) -> Result<()> {
+    fn watch_multiple_inner(&self, paths: Vec<(PathBuf, WatchMode)>) -> Result<()> {
         let pbs = paths
             .into_iter()
             .map(|(path, watch_mode)| {
@@ -736,7 +725,7 @@ impl KqueueWatcher {
             .map_err(|e| Error::generic(&e.to_string()))
     }
 
-    fn unwatch_inner(&mut self, path: &Path) -> Result<()> {
+    fn unwatch_inner(&self, path: &Path) -> Result<()> {
         let pb = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -814,11 +803,12 @@ mod tests {
         channel()
     }
 
+    #[expect(clippy::print_stdout)]
     #[test]
     fn test_remove_recursive() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let path = PathBuf::from("src");
 
-        let mut watcher = KqueueWatcher::new(|event| println!("{:?}", event), Config::default())?;
+        let mut watcher = KqueueWatcher::new(|event| println!("{event:?}"), Config::default())?;
         watcher.watch(&path, WatchMode::recursive())?;
         let result = watcher.unwatch(&path);
         assert!(
@@ -832,7 +822,7 @@ mod tests {
     #[test]
     fn create_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -852,7 +842,7 @@ mod tests {
     #[test]
     fn create_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
 
@@ -900,7 +890,7 @@ mod tests {
     #[ignore = "TODO: not implemented"]
     fn create_self_file_nested() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry/nested");
 
@@ -926,7 +916,7 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
 
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         watcher.watch_recursively(&tmpdir);
 
@@ -947,7 +937,7 @@ mod tests {
     #[test]
     fn chmod_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let file = std::fs::File::create_new(&path).expect("create");
@@ -967,7 +957,7 @@ mod tests {
     #[test]
     fn rename_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -991,7 +981,7 @@ mod tests {
     #[test]
     fn rename_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1021,7 +1011,7 @@ mod tests {
     #[test]
     fn rename_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1061,7 +1051,7 @@ mod tests {
     #[test]
     fn delete_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -1083,7 +1073,7 @@ mod tests {
     #[test]
     fn delete_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -1110,7 +1100,7 @@ mod tests {
     #[test]
     fn delete_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -1136,7 +1126,7 @@ mod tests {
     #[test]
     fn create_write_overwrite() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let overwritten_file = tmpdir.path().join("overwritten_file");
         let overwriting_file = tmpdir.path().join("overwriting_file");
         std::fs::write(&overwritten_file, "123").expect("write1");
@@ -1174,7 +1164,7 @@ mod tests {
     #[test]
     fn create_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -1191,7 +1181,7 @@ mod tests {
     #[test]
     fn chmod_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1212,7 +1202,7 @@ mod tests {
     #[test]
     fn rename_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_path");
@@ -1235,7 +1225,7 @@ mod tests {
     #[test]
     fn delete_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1258,7 +1248,7 @@ mod tests {
     #[test]
     fn delete_self_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1286,7 +1276,7 @@ mod tests {
     #[test]
     fn delete_self_dir_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1319,7 +1309,7 @@ mod tests {
     #[test]
     fn rename_dir_twice() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_path");
@@ -1350,7 +1340,7 @@ mod tests {
     fn move_out_of_watched_dir() {
         let tmpdir = testdir();
         let subdir = tmpdir.path().join("subdir");
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = subdir.join("entry");
         std::fs::create_dir_all(&subdir).expect("create_dir_all");
@@ -1375,7 +1365,7 @@ mod tests {
     #[test]
     fn create_write_write_rename_write_remove() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let file1 = tmpdir.path().join("entry");
         let file2 = tmpdir.path().join("entry2");
@@ -1411,7 +1401,7 @@ mod tests {
     #[test]
     fn rename_twice() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1450,7 +1440,7 @@ mod tests {
     #[test]
     fn set_file_mtime() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let file = std::fs::File::create_new(&path).expect("create");
@@ -1475,7 +1465,7 @@ mod tests {
     #[test]
     fn write_file_non_recursive_watch() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1499,7 +1489,7 @@ mod tests {
     #[test]
     fn write_to_a_hardlink_pointed_to_the_watched_file_triggers_an_event() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let subdir = tmpdir.path().join("subdir");
         let subdir2 = tmpdir.path().join("subdir2");
@@ -1538,7 +1528,7 @@ mod tests {
         let nested8 = tmpdir.path().join("1/2/3/4/5/6/7/8");
         let nested9 = tmpdir.path().join("1/2/3/4/5/6/7/8/9");
 
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         watcher.watch_recursively(&tmpdir);
 
@@ -1574,7 +1564,7 @@ mod tests {
     #[test]
     fn upgrade_to_recursive() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("upgrade");
         let deep = tmpdir.path().join("upgrade/deep");

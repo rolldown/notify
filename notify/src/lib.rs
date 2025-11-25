@@ -376,7 +376,7 @@ pub trait Watcher {
     /// ```
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
         struct DefaultPathsMut<'a, T: ?Sized>(&'a mut T);
-        impl<'a, T: Watcher + ?Sized> PathsMut for DefaultPathsMut<'a, T> {
+        impl<T: Watcher + ?Sized> PathsMut for DefaultPathsMut<'_, T> {
             fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
                 self.0.watch(path, watch_mode)
             }
@@ -475,13 +475,14 @@ mod tests {
 
     #[test]
     fn test_object_safe() {
-        let _watcher: &dyn Watcher = &NullWatcher;
+        let _: &dyn Watcher = &NullWatcher;
     }
 
     #[test]
     fn test_debug_impl() {
         macro_rules! assert_debug_impl {
             ($t:ty) => {{
+                #[expect(clippy::allow_attributes)]
                 #[allow(dead_code)]
                 trait NeedsDebug: std::fmt::Debug {}
                 impl NeedsDebug for $t {}
@@ -513,6 +514,7 @@ mod tests {
         })
     }
 
+    #[expect(clippy::print_stdout)]
     #[test]
     fn integration() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
@@ -617,7 +619,7 @@ mod tests {
     #[test]
     fn create_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = recommended_channel();
+        let (mut watcher, rx) = recommended_channel();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -629,7 +631,7 @@ mod tests {
     #[test]
     fn create_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = recommended_channel();
+        let (mut watcher, rx) = recommended_channel();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -641,7 +643,7 @@ mod tests {
     #[test]
     fn modify_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = recommended_channel();
+        let (mut watcher, rx) = recommended_channel();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -655,7 +657,7 @@ mod tests {
     #[test]
     fn remove_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = recommended_channel();
+        let (mut watcher, rx) = recommended_channel();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");

@@ -91,6 +91,7 @@ mod data {
     use super::ScanEventHandler;
 
     fn system_time_to_seconds(time: std::time::SystemTime) -> i64 {
+        #[expect(clippy::cast_possible_wrap)]
         match time.duration_since(std::time::SystemTime::UNIX_EPOCH) {
             Ok(d) => d.as_secs() as i64,
             Err(e) => -(e.duration().as_secs() as i64),
@@ -166,7 +167,7 @@ mod data {
             f.debug_struct("DataBuilder")
                 .field("build_hasher", &self.build_hasher)
                 .field("now", &self.now)
-                .finish()
+                .finish_non_exhaustive()
         }
     }
 
@@ -238,7 +239,7 @@ mod data {
         /// # Side effect
         ///
         /// This function may emit event by `data_builder.emitter`.
-        pub(super) fn rescan(&mut self, data_builder: &mut DataBuilder) {
+        pub(super) fn rescan(&mut self, data_builder: &DataBuilder) {
             // scan current filesystem.
             for (path, new_path_data) in Self::scan_all_path_data(
                 data_builder,
@@ -261,7 +262,7 @@ mod data {
 
             // scan for disappeared paths.
             let mut disappeared_paths = Vec::new();
-            for (path, path_data) in self.all_path_data.iter() {
+            for (path, path_data) in &self.all_path_data {
                 if path_data.last_check < data_builder.now {
                     disappeared_paths.push(path.clone());
                 }
@@ -484,7 +485,7 @@ mod data {
 
         /// Emit event.
         fn emit_ok(&self, event: Event) {
-            self.emit(Ok(event))
+            self.emit(Ok(event));
         }
 
         /// Emit io error event.
@@ -524,7 +525,7 @@ pub struct PollWatcher {
 impl PollWatcher {
     /// Create a new [`PollWatcher`], configured as needed.
     pub fn new<F: EventHandler>(event_handler: F, config: Config) -> crate::Result<PollWatcher> {
-        Self::with_opt::<_, ()>(event_handler, config, None)
+        Ok(Self::with_opt::<_, ()>(event_handler, config, None))
     }
 
     /// Actively poll for changes. Can be combined with a timeout of 0 to perform only manual polling.
@@ -549,7 +550,7 @@ impl PollWatcher {
         config: Config,
         scan_callback: G,
     ) -> crate::Result<PollWatcher> {
-        Self::with_opt(event_handler, config, Some(scan_callback))
+        Ok(Self::with_opt(event_handler, config, Some(scan_callback)))
     }
 
     /// create a new [`PollWatcher`] with all options.
@@ -557,14 +558,14 @@ impl PollWatcher {
         event_handler: F,
         config: Config,
         scan_callback: Option<G>,
-    ) -> crate::Result<PollWatcher> {
+    ) -> PollWatcher {
         let data_builder =
             DataBuilder::new(event_handler, config.compare_contents(), scan_callback);
 
         let (tx, rx) = unbounded();
 
         let poll_watcher = PollWatcher {
-            watches: Default::default(),
+            watches: Arc::default(),
             data_builder: Arc::new(Mutex::new(data_builder)),
             want_to_stop: Arc::new(AtomicBool::new(false)),
             delay: config.poll_interval(),
@@ -574,7 +575,7 @@ impl PollWatcher {
 
         poll_watcher.run(rx);
 
-        Ok(poll_watcher)
+        poll_watcher
     }
 
     fn run(&self, rx: Receiver<()>) {
@@ -602,7 +603,7 @@ impl PollWatcher {
 
                         let vals = watches.values_mut();
                         for watch_data in vals {
-                            watch_data.rescan(&mut data_builder);
+                            watch_data.rescan(&data_builder);
                         }
                     }
                     // TODO: v7.0 use delay - (Instant::now().saturating_duration_since(start))
@@ -628,7 +629,7 @@ impl PollWatcher {
     ///
     /// QUESTION: this function never return an Error, is it as intend?
     /// Please also consider the IO Error event problem.
-    fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) {
+    fn watch_inner(&self, path: &Path, watch_mode: WatchMode) {
         // HINT: Make sure always lock in the same order to avoid deadlock.
         //
         // FIXME: inconsistent: some place mutex poison cause panic, some place just ignore.
@@ -653,7 +654,7 @@ impl PollWatcher {
     /// Unwatch a path.
     ///
     /// Return `Err(_)` if given path has't be monitored.
-    fn unwatch_inner(&mut self, path: &Path) -> crate::Result<()> {
+    fn unwatch_inner(&self, path: &Path) -> crate::Result<()> {
         // FIXME: inconsistent: some place mutex poison cause panic, some place just ignore.
         self.watches
             .lock()
@@ -712,7 +713,7 @@ mod tests {
     #[test]
     fn create_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -726,7 +727,7 @@ mod tests {
     #[ignore = "not implemented"]
     fn create_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
 
@@ -766,7 +767,7 @@ mod tests {
     #[ignore = "TODO: not implemented"]
     fn create_self_file_nested() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry/nested");
 
@@ -781,7 +782,7 @@ mod tests {
     #[test]
     fn create_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -794,7 +795,7 @@ mod tests {
     #[test]
     fn modify_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("Unable to create");
 
@@ -811,7 +812,7 @@ mod tests {
     #[test]
     fn rename_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_entry");
         std::fs::File::create_new(&path).expect("Unable to create");
@@ -832,7 +833,7 @@ mod tests {
     #[ignore = "TODO: not implemented"]
     fn rename_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -861,7 +862,7 @@ mod tests {
     #[ignore = "TODO: not implemented"]
     fn rename_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -903,7 +904,7 @@ mod tests {
     #[test]
     fn delete_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("Unable to create");
 
@@ -918,7 +919,7 @@ mod tests {
     #[ignore = "TODO: not implemented"]
     fn delete_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("Unable to create");
 
@@ -939,7 +940,7 @@ mod tests {
     #[ignore = "TODO: not implemented"]
     fn delete_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("Unable to create");
 
@@ -964,7 +965,7 @@ mod tests {
     #[test]
     fn create_write_overwrite() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let overwritten_file = tmpdir.path().join("overwritten_file");
         let overwriting_file = tmpdir.path().join("overwriting_file");
         std::fs::write(&overwritten_file, "123").expect("write1");

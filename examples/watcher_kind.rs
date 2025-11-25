@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use notify::*;
 use std::{path::Path, time::Duration};
 
@@ -23,6 +25,6 @@ fn main() {
 
     // just print all events, this blocks forever
     for e in rx {
-        println!("{:?}", e);
+        println!("{e:?}");
     }
 }
