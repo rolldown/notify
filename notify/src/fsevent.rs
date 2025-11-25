@@ -273,14 +273,17 @@ impl<'a> FsEventPathsMut<'a> {
     }
 }
 impl PathsMut for FsEventPathsMut<'_> {
+    #[tracing::instrument(level = "debug", skip(self))]
     fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.0.append_path(path, watch_mode)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn remove(&mut self, path: &Path) -> Result<()> {
         self.0.remove_path(path)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn commit(self: Box<Self>) -> Result<()> {
         self.0.run()
     }
@@ -493,7 +496,11 @@ impl FsEventWatcher {
                     // is intended to prevent this.
                     let event_id = fs::FSEventsGetCurrentEventId();
                     let device = fs::FSEventStreamGetDeviceBeingWatched(stream);
-                    fs::FSEventsPurgeEventsForDeviceUpToEventId(device, event_id);
+                    if fs::FSEventsPurgeEventsForDeviceUpToEventId(device, event_id) == 0 {
+                        tracing::error!(
+                            "FSEventsPurgeEventsForDeviceUpToEventId failed for device {device}, event id {event_id}",
+                        );
+                    }
                     fs::FSEventStreamInvalidate(stream);
                     fs::FSEventStreamRelease(stream);
                 }
@@ -554,6 +561,13 @@ unsafe fn callback_impl(
             panic!("Unable to decode StreamFlags: {}", flag);
         });
 
+        tracing::trace!(
+            target = "rolldown-notify::fsevent::details",
+            ?path,
+            ?flag,
+            "FSEvent raw event received"
+        );
+
         let mut handle_event = false;
         for (p, r) in unsafe { &(*info).recursive_info } {
             if path.starts_with(p) {
@@ -573,7 +587,7 @@ unsafe fn callback_impl(
             continue;
         }
 
-        tracing::trace!("FSEvent: path = `{}`, flag = {:?}", path.display(), flag);
+        tracing::trace!(?path, ?flag, "FSEvent event received");
 
         for ev in translate_flags(flag, true).into_iter() {
             // TODO: precise
@@ -586,22 +600,27 @@ unsafe fn callback_impl(
 
 impl Watcher for FsEventWatcher {
     /// Create a new watcher.
+    #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
         Self::from_event_handler(Arc::new(Mutex::new(event_handler)))
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
         self.watch_inner(path, watch_mode)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
         Box::new(FsEventPathsMut::new(self))
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn unwatch(&mut self, path: &Path) -> Result<()> {
         self.unwatch_inner(path)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn configure(&mut self, config: Config) -> Result<bool> {
         let (tx, rx) = unbounded();
         self.configure_raw_mode(config, tx);
