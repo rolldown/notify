@@ -130,20 +130,29 @@ where
 #[cfg(feature = "crossbeam-channel")]
 impl DebounceEventHandler for crossbeam_channel::Sender<DebounceEventResult> {
     fn handle_event(&mut self, event: DebounceEventResult) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send debounce event result");
+        }
     }
 }
 
 #[cfg(feature = "flume")]
 impl DebounceEventHandler for flume::Sender<DebounceEventResult> {
     fn handle_event(&mut self, event: DebounceEventResult) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send debounce event result");
+        }
     }
 }
 
 impl DebounceEventHandler for std::sync::mpsc::Sender<DebounceEventResult> {
     fn handle_event(&mut self, event: DebounceEventResult) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send debounce event result");
+        }
     }
 }
 
@@ -214,7 +223,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
 
         if let Some(event) = self.rescan_event.take() {
             if now.saturating_duration_since(event.time) >= self.timeout {
-                tracing::trace!("debounced event: {event:?}");
+                tracing::trace!("debounce candidate rescan event: {event:?}");
                 events_expired.push(event);
             } else {
                 self.rescan_event = Some(event);
@@ -229,6 +238,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             while let Some(event) = queue.events.pop_front() {
                 // remove previous event of the same kind
                 if let Some(idx) = kind_index.get(&event.kind).copied() {
+                    tracing::trace!("removed candidate event: {event:?}");
                     events_expired.remove(idx);
 
                     kind_index.values_mut().for_each(|i| {
@@ -239,6 +249,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
                 }
 
                 if now.saturating_duration_since(event.time) >= self.timeout {
+                    tracing::trace!("debounce candidate event: {event:?}");
                     kind_index.insert(event.kind, events_expired.len());
 
                     events_expired.push(event);
@@ -553,7 +564,10 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
     pub fn stop(mut self) {
         self.set_stop();
         if let Some(t) = self.debouncer_thread.take() {
-            let _ = t.join();
+            let result = t.join();
+            if let Err(e) = result {
+                tracing::error!(?e, "failed to join debouncer thread");
+            }
         }
     }
 
@@ -634,6 +648,7 @@ impl<T: Watcher, C: FileIdCache> Drop for Debouncer<T, C> {
 /// Timeout is the amount of time after which a debounced event is emitted.
 ///
 /// If `tick_rate` is `None`, notify will select a tick rate that is 1/4 of the provided timeout.
+#[tracing::instrument(level = "debug", skip(event_handler, file_id_cache))]
 pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + Send + 'static>(
     timeout: Duration,
     tick_rate: Option<Duration>,
@@ -730,6 +745,7 @@ pub fn new_debouncer<F: DebounceEventHandler>(
     )
 }
 
+#[tracing::instrument(level = "trace", ret)]
 fn sort_events(events: Vec<DebouncedEvent>) -> Vec<DebouncedEvent> {
     let mut sorted = Vec::with_capacity(events.len());
 

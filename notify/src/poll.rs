@@ -10,6 +10,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
     time::Duration,
@@ -39,20 +40,29 @@ where
 #[cfg(feature = "crossbeam-channel")]
 impl ScanEventHandler for crossbeam_channel::Sender<ScanEvent> {
     fn handle_event(&mut self, event: ScanEvent) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send scan event result");
+        }
     }
 }
 
 #[cfg(feature = "flume")]
 impl ScanEventHandler for flume::Sender<ScanEvent> {
     fn handle_event(&mut self, event: ScanEvent) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send scan event result");
+        }
     }
 }
 
 impl ScanEventHandler for std::sync::mpsc::Sender<ScanEvent> {
     fn handle_event(&mut self, event: ScanEvent) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send scan event result");
+        }
     }
 }
 
@@ -573,7 +583,7 @@ impl PollWatcher {
         let want_to_stop = Arc::clone(&self.want_to_stop);
         let delay = self.delay;
 
-        let _ = thread::Builder::new()
+        let result = thread::Builder::new()
             .name("notify-rs poll loop".to_string())
             .spawn(move || {
                 loop {
@@ -596,13 +606,22 @@ impl PollWatcher {
                         }
                     }
                     // TODO: v7.0 use delay - (Instant::now().saturating_duration_since(start))
-                    if let Some(delay) = delay {
-                        let _ = rx.recv_timeout(delay);
+                    let result = if let Some(delay) = delay {
+                        rx.recv_timeout(delay).or_else(|e| match e {
+                            mpsc::RecvTimeoutError::Timeout => Ok(()),
+                            mpsc::RecvTimeoutError::Disconnected => Err(mpsc::RecvError),
+                        })
                     } else {
-                        let _ = rx.recv();
+                        rx.recv()
+                    };
+                    if let Err(e) = result {
+                        tracing::error!(?e, "failed to receive poll message");
                     }
                 }
             });
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to start poll watcher thread");
+        }
     }
 
     /// Watch a path location.
@@ -647,16 +666,19 @@ impl PollWatcher {
 
 impl Watcher for PollWatcher {
     /// Create a new [`PollWatcher`].
+    #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, config: Config) -> crate::Result<Self> {
         Self::new(event_handler, config)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> crate::Result<()> {
         self.watch_inner(path, watch_mode);
 
         Ok(())
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn unwatch(&mut self, path: &Path) -> crate::Result<()> {
         self.unwatch_inner(path)
     }
