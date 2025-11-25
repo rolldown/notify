@@ -265,7 +265,7 @@ impl EventLoop {
                     Ok(events) => {
                         let mut num_events = 0;
                         for event in events {
-                            log::trace!("inotify event: {event:?}");
+                            tracing::trace!("inotify event: {event:?}");
 
                             num_events += 1;
                             if event.mask.contains(EventMask::Q_OVERFLOW) {
@@ -287,7 +287,9 @@ impl EventLoop {
                             let path = match path {
                                 Some(path) => path,
                                 None => {
-                                    log::debug!("inotify event with unknown descriptor: {event:?}");
+                                    tracing::debug!(
+                                        "inotify event with unknown descriptor: {event:?}"
+                                    );
                                     continue;
                                 }
                             };
@@ -654,7 +656,7 @@ impl EventLoop {
         }
 
         if let Some(ref mut inotify) = self.inotify {
-            log::trace!("adding inotify watch: {}", path.display());
+            tracing::trace!("adding inotify watch: {}", path.display());
 
             match inotify.watches().add(&path, watchmask) {
                 Err(e) => {
@@ -696,7 +698,7 @@ impl EventLoop {
         };
         let mut inotify_watches = inotify.watches();
 
-        log::trace!("removing inotify watch: {}", path.display());
+        tracing::trace!("removing inotify watch: {}", path.display());
 
         if let Some((handle, _)) = self.watch_handles.remove_by_right(&path) {
             inotify_watches

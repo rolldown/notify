@@ -462,7 +462,7 @@ unsafe extern "system" fn handle_event(
         }
         _ => {
             // Some unidentified error occurred, log and unwatch the directory, then return.
-            log::error!(
+            tracing::error!(
                 "unknown error in ReadDirectoryChangesW for directory {}: {}",
                 request.data.dir.display(),
                 error_code
@@ -517,7 +517,7 @@ unsafe extern "system" fn handle_event(
             || request.data.watches.borrow().contains_key(&path));
 
         if !skip {
-            log::trace!(
+            tracing::trace!(
                 "Event: path = `{}`, action = {:?}",
                 path.display(),
                 cur_entry.Action

@@ -282,7 +282,7 @@ mod data {
             // whether this is an initial scan, used only for events
             is_initial: bool,
         ) -> impl Iterator<Item = (PathBuf, PathData)> + '_ {
-            log::trace!("rescanning {root:?}");
+            tracing::trace!("rescanning {root:?}");
             // WalkDir return only one entry if root is a file (not a folder),
             // so we can use single logic to do the both file & dir's jobs.
             //
@@ -294,7 +294,7 @@ mod data {
                 .filter_map(|entry_res| match entry_res {
                     Ok(entry) => Some(entry),
                     Err(err) => {
-                        log::warn!("walkdir error scanning {err:?}");
+                        tracing::warn!("walkdir error scanning {err:?}");
 
                         if let Some(io_error) = err.io_error() {
                             // clone an io::Error, so we have to create a new one.
