@@ -1535,14 +1535,16 @@ mod tests {
         std::fs::File::create_new(&file).expect("create");
         std::fs::remove_file(&file).expect("delete");
 
-        rx.wait_ordered_exact([expected(&deep).modify_data_any().optional().multiple()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&deep).modify_data_any().optional().multiple()]);
 
         watcher.watch_recursively(&path);
         std::fs::File::create_new(&file).expect("create");
 
-        rx.wait_ordered_exact([expected(&file).create_file()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([
+            expected(&deep).modify_data_any().optional().multiple(),
+            expected(&file).create_file(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf(), path, deep, file])
