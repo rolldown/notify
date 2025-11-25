@@ -1194,6 +1194,28 @@ mod tests {
         ]);
     }
 
+    #[test]
+    fn upgrade_to_recursive() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("upgrade");
+        let deep = tmpdir.path().join("upgrade/deep");
+        let file = tmpdir.path().join("upgrade/deep/file");
+        std::fs::create_dir_all(&deep).expect("create_dir");
+
+        watcher.watch_nonrecursively(&path);
+        std::fs::File::create_new(&file).expect("create");
+        std::fs::remove_file(&file).expect("delete");
+
+        rx.wait_ordered([expected(&deep).modify_data_any().optional()]);
+
+        watcher.watch_recursively(&path);
+        std::fs::File::create_new(&file).expect("create");
+
+        rx.wait_ordered([expected(&file).create_file()]);
+    }
+
     // fsevents seems to not allow watching more than 4096 paths at once.
     // https://github.com/fsnotify/fsevents/issues/48
     // Based on https://github.com/fsnotify/fsevents/commit/3899270de121c963202e6fed46aa31d5ec7b3908

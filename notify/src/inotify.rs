@@ -1955,4 +1955,35 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn upgrade_to_recursive() {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+
+        let path = tmpdir.path().join("upgrade");
+        let deep = tmpdir.path().join("upgrade/deep");
+        let file = tmpdir.path().join("upgrade/deep/file");
+        std::fs::create_dir_all(&deep).expect("create_dir");
+
+        watcher.watch_nonrecursively(&path);
+        std::fs::File::create_new(&file).expect("create");
+        std::fs::remove_file(&file).expect("delete");
+
+        rx.ensure_empty_with_wait();
+
+        watcher.watch_recursively(&path);
+        std::fs::File::create_new(&file).expect("create");
+
+        rx.wait_ordered([
+            expected(&file).create_file(),
+            expected(&file).access_open_any(),
+            expected(&file).access_close_write(),
+        ])
+        .ensure_no_tail();
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf(), path, deep])
+        );
+    }
 }
