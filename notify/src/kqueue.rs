@@ -934,6 +934,7 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(&path).modify_meta_any().optional(),
+            expected(&path).modify_data_size().optional(),
             expected(&path).modify_data_any(),
         ])
         .ensure_no_tail();
@@ -1149,6 +1150,7 @@ mod tests {
         rx.wait_ordered([
             // create for overwriting_file can be
             // create_file or create_other and may be missing
+            expected(&overwriting_file).modify_data_size().optional(),
             expected(&overwriting_file)
                 .modify_data_any()
                 .optional()
@@ -1388,6 +1390,7 @@ mod tests {
         std::fs::remove_file(&new_path).expect("remove");
 
         rx.wait_ordered([
+            expected(&file2).modify_data_size().optional(),
             expected(&file2).modify_data_any(),
             expected(&new_path).create_file().optional(),
             expected(&file1).rename_any().optional(),
@@ -1483,6 +1486,7 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(&path).modify_meta_any().optional(),
+            expected(&path).modify_data_size().optional(),
             expected(&path).modify_data_any(),
         ])
         .ensure_no_tail();
@@ -1513,6 +1517,7 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(&file).modify_meta_any().optional(),
+            expected(&file).modify_data_size().optional(),
             expected(&file).modify_data_any(),
         ])
         .ensure_no_tail();
