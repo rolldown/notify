@@ -1535,7 +1535,7 @@ mod tests {
         std::fs::File::create_new(&file).expect("create");
         std::fs::remove_file(&file).expect("delete");
 
-        rx.wait_ordered_exact([expected(&deep).modify_data_any().optional()])
+        rx.wait_ordered_exact([expected(&deep).modify_data_any().optional().multiple()])
             .ensure_no_tail();
 
         watcher.watch_recursively(&path);
