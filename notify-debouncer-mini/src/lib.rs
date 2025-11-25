@@ -158,20 +158,29 @@ where
 #[cfg(feature = "crossbeam-channel")]
 impl DebounceEventHandler for crossbeam_channel::Sender<DebounceEventResult> {
     fn handle_event(&mut self, event: DebounceEventResult) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send debounce event result");
+        }
     }
 }
 
 #[cfg(feature = "flume")]
 impl DebounceEventHandler for flume::Sender<DebounceEventResult> {
     fn handle_event(&mut self, event: DebounceEventResult) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send debounce event result");
+        }
     }
 }
 
 impl DebounceEventHandler for std::sync::mpsc::Sender<DebounceEventResult> {
     fn handle_event(&mut self, event: DebounceEventResult) {
-        let _ = self.send(event);
+        let result = self.send(event);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send debounce event result");
+        }
     }
 }
 
@@ -329,11 +338,15 @@ impl<T: Watcher> Debouncer<T> {
 impl<T: Watcher> Drop for Debouncer<T> {
     fn drop(&mut self) {
         // send error just means that it is stopped, can't do much else
-        let _ = self.stop_channel.send(InnerEvent::Shutdown);
+        let result = self.stop_channel.send(InnerEvent::Shutdown);
+        if let Err(e) = result {
+            tracing::error!(?e, "failed to send shutdown event");
+        }
     }
 }
 
 /// Creates a new debounced watcher with custom configuration.
+#[tracing::instrument(level = "debug", skip(event_handler))]
 pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
     config: Config,
     mut event_handler: F,
@@ -383,7 +396,10 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
         move |e: Result<Event, Error>| {
             // send failure can't be handled, would need a working channel to signal that
             // also probably means that we're in the process of shutting down
-            let _ = tx_c.send(InnerEvent::NotifyEvent(e));
+            let result = tx_c.send(InnerEvent::NotifyEvent(e));
+            if let Err(e) = result {
+                tracing::error!(?e, "failed to send notify event");
+            }
         },
         config.notify_config,
     )?;
