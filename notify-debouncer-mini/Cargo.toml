@@ -29,5 +29,5 @@ rolldown-notify.workspace = true
 rolldown-notify-types.workspace = true
 crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
-log.workspace = true
+tracing.workspace = true
 tempfile.workspace = true

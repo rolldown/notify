@@ -32,7 +32,7 @@ crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
 rolldown-file-id.workspace = true
 walkdir.workspace = true
-log.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

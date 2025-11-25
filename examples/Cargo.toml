@@ -11,8 +11,8 @@ rolldown-notify-debouncer-mini = { workspace = true }
 rolldown-notify-debouncer-full = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }
-log = { workspace = true }
-env_logger = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[example]]
 name = "async_monitor"

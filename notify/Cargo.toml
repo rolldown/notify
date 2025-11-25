@@ -32,7 +32,7 @@ rolldown-notify-types.workspace = true
 crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
 libc.workspace = true
-log.workspace = true
+tracing.workspace = true
 walkdir.workspace = true
 
 [target.'cfg(any(target_os="linux", target_os="android"))'.dependencies]

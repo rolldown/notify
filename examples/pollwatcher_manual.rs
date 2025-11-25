@@ -1,19 +1,23 @@
 use notify::{Config, PollWatcher, WatchMode, Watcher};
 use std::path::Path;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Example for the PollWatcher with manual polling.
 // Call with cargo run -p examples --example pollwatcher_manual -- path/to/watch
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .init();
 
     let path = std::env::args()
         .nth(1)
         .expect("Argument 1 needs to be a path");
 
-    log::info!("Watching {path}");
+    tracing::info!("Watching {path}");
 
     if let Err(error) = watch(path) {
-        log::error!("Error: {error:?}");
+        tracing::error!("Error: {error:?}");
     }
 }
 

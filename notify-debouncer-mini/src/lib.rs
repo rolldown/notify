@@ -243,10 +243,10 @@ impl DebounceDataInner {
         self.debounce_deadline = None;
         for (path, event) in self.event_map.drain() {
             if event.update.elapsed() >= self.timeout {
-                log::trace!("debounced event: {:?}", DebouncedEventKind::Any);
+                tracing::trace!("debounced event: {:?}", DebouncedEventKind::Any);
                 events_expired.push(DebouncedEvent::new(path, DebouncedEventKind::Any));
             } else if event.insert.elapsed() >= self.timeout {
-                log::trace!("debounced event: {:?}", DebouncedEventKind::AnyContinuous);
+                tracing::trace!("debounced event: {:?}", DebouncedEventKind::AnyContinuous);
                 // set a new deadline, otherwise an 'AnyContinuous' will never resolve to a final 'Any' event
                 Self::check_deadline(
                     self.batch_mode,
@@ -297,7 +297,7 @@ impl DebounceDataInner {
     /// Add new event to debouncer cache
     #[inline(always)]
     fn add_event(&mut self, event: Event) {
-        log::trace!("raw event: {event:?}");
+        tracing::trace!("raw event: {event:?}");
         let time = Instant::now();
         if self.debounce_deadline.is_none() {
             self.debounce_deadline = Some(time + self.timeout);
