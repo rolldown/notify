@@ -229,6 +229,30 @@ impl EventLoop {
             .expect("configuration channel disconnected");
     }
 
+    fn is_watched_path(watches: &HashMap<PathBuf, WatchMode>, path: &Path) -> bool {
+        if watches.contains_key(path) {
+            return true;
+        }
+
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        if watches.contains_key(parent) {
+            return true;
+        }
+
+        let mut current = parent;
+        while let Some(parent) = current.parent() {
+            if let Some(watch_mode) = watches.get(parent)
+                && watch_mode.recursive_mode == RecursiveMode::Recursive
+            {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
     fn handle_inotify(&mut self) {
         let mut add_watches = Vec::new();
         let mut remove_watches = Vec::new();
@@ -285,29 +309,41 @@ impl EventLoop {
 
                                 self.rename_event = Some(event.clone());
 
-                                evs.push(event);
+                                if Self::is_watched_path(&self.watches, &path) {
+                                    evs.push(event);
+                                }
                             } else if event.mask.contains(EventMask::MOVED_TO) {
-                                evs.push(
-                                    Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To)))
-                                        .set_tracker(event.cookie as usize)
-                                        .add_path(path.clone()),
-                                );
-
-                                let trackers_match =
-                                    self.rename_event.as_ref().and_then(|e| e.tracker())
-                                        == Some(event.cookie as usize);
-
-                                if trackers_match {
-                                    let rename_event = self.rename_event.take().unwrap(); // unwrap is safe because `rename_event` must be set at this point
+                                if Self::is_watched_path(&self.watches, &path) {
                                     evs.push(
                                         Event::new(EventKind::Modify(ModifyKind::Name(
-                                            RenameMode::Both,
+                                            RenameMode::To,
                                         )))
                                         .set_tracker(event.cookie as usize)
-                                        .add_some_path(rename_event.paths.first().cloned())
                                         .add_path(path.clone()),
                                     );
+
+                                    let trackers_match =
+                                        self.rename_event.as_ref().and_then(|e| e.tracker())
+                                            == Some(event.cookie as usize);
+
+                                    if trackers_match {
+                                        let rename_event = self.rename_event.take().unwrap(); // unwrap is safe because `rename_event` must be set at this point
+                                        let from_path = rename_event.paths.first();
+                                        if from_path.is_none_or(|from_path| {
+                                            Self::is_watched_path(&self.watches, from_path)
+                                        }) {
+                                            evs.push(
+                                                Event::new(EventKind::Modify(ModifyKind::Name(
+                                                    RenameMode::Both,
+                                                )))
+                                                .set_tracker(event.cookie as usize)
+                                                .add_some_path(from_path.cloned())
+                                                .add_path(path.clone()),
+                                            );
+                                        }
+                                    }
                                 }
+
                                 let is_file_without_hardlinks =
                                     !event.mask.contains(EventMask::ISDIR)
                                         && metadata(&path)
@@ -326,26 +362,30 @@ impl EventLoop {
                                     &self.watch_handles,
                                     &mut remove_watches,
                                 );
-                                evs.push(
-                                    Event::new(EventKind::Modify(ModifyKind::Name(
-                                        RenameMode::From,
-                                    )))
-                                    .add_path(path.clone()),
-                                );
-                                // TODO stat the path and get to new path
-                                // - emit To and Both events
-                                // - change prefix for further events
+                                if Self::is_watched_path(&self.watches, &path) {
+                                    evs.push(
+                                        Event::new(EventKind::Modify(ModifyKind::Name(
+                                            RenameMode::From,
+                                        )))
+                                        .add_path(path.clone()),
+                                    );
+                                    // TODO stat the path and get to new path
+                                    // - emit To and Both events
+                                    // - change prefix for further events
+                                }
                             }
                             if event.mask.contains(EventMask::CREATE) {
                                 let is_dir = event.mask.contains(EventMask::ISDIR);
-                                evs.push(
-                                    Event::new(EventKind::Create(if is_dir {
-                                        CreateKind::Folder
-                                    } else {
-                                        CreateKind::File
-                                    }))
-                                    .add_path(path.clone()),
-                                );
+                                if Self::is_watched_path(&self.watches, &path) {
+                                    evs.push(
+                                        Event::new(EventKind::Create(if is_dir {
+                                            CreateKind::Folder
+                                        } else {
+                                            CreateKind::File
+                                        }))
+                                        .add_path(path.clone()),
+                                    );
+                                }
                                 let is_file_without_hardlinks = !is_dir
                                     && metadata(&path)
                                         .map(|m| m.is_file_without_hardlinks())
@@ -358,16 +398,18 @@ impl EventLoop {
                                 );
                             }
                             if event.mask.contains(EventMask::DELETE) {
-                                evs.push(
-                                    Event::new(EventKind::Remove(
-                                        if event.mask.contains(EventMask::ISDIR) {
-                                            RemoveKind::Folder
-                                        } else {
-                                            RemoveKind::File
-                                        },
-                                    ))
-                                    .add_path(path.clone()),
-                                );
+                                if Self::is_watched_path(&self.watches, &path) {
+                                    evs.push(
+                                        Event::new(EventKind::Remove(
+                                            if event.mask.contains(EventMask::ISDIR) {
+                                                RemoveKind::Folder
+                                            } else {
+                                                RemoveKind::File
+                                            },
+                                        ))
+                                        .add_path(path.clone()),
+                                    );
+                                }
                                 remove_watch_by_event(
                                     &path,
                                     &self.watch_handles,
@@ -380,17 +422,21 @@ impl EventLoop {
                                     Some((_, (_, false))) => RemoveKind::File,
                                     None => RemoveKind::Other,
                                 };
-                                evs.push(
-                                    Event::new(EventKind::Remove(remove_kind))
-                                        .add_path(path.clone()),
-                                );
+                                if Self::is_watched_path(&self.watches, &path) {
+                                    evs.push(
+                                        Event::new(EventKind::Remove(remove_kind))
+                                            .add_path(path.clone()),
+                                    );
+                                }
                                 remove_watch_by_event(
                                     &path,
                                     &self.watch_handles,
                                     &mut remove_watches,
                                 );
                             }
-                            if event.mask.contains(EventMask::MODIFY) {
+                            if event.mask.contains(EventMask::MODIFY)
+                                && Self::is_watched_path(&self.watches, &path)
+                            {
                                 evs.push(
                                     Event::new(EventKind::Modify(ModifyKind::Data(
                                         DataChange::Any,
@@ -398,7 +444,9 @@ impl EventLoop {
                                     .add_path(path.clone()),
                                 );
                             }
-                            if event.mask.contains(EventMask::CLOSE_WRITE) {
+                            if event.mask.contains(EventMask::CLOSE_WRITE)
+                                && Self::is_watched_path(&self.watches, &path)
+                            {
                                 evs.push(
                                     Event::new(EventKind::Access(AccessKind::Close(
                                         AccessMode::Write,
@@ -406,7 +454,9 @@ impl EventLoop {
                                     .add_path(path.clone()),
                                 );
                             }
-                            if event.mask.contains(EventMask::CLOSE_NOWRITE) {
+                            if event.mask.contains(EventMask::CLOSE_NOWRITE)
+                                && Self::is_watched_path(&self.watches, &path)
+                            {
                                 evs.push(
                                     Event::new(EventKind::Access(AccessKind::Close(
                                         AccessMode::Read,
@@ -414,7 +464,9 @@ impl EventLoop {
                                     .add_path(path.clone()),
                                 );
                             }
-                            if event.mask.contains(EventMask::ATTRIB) {
+                            if event.mask.contains(EventMask::ATTRIB)
+                                && Self::is_watched_path(&self.watches, &path)
+                            {
                                 evs.push(
                                     Event::new(EventKind::Modify(ModifyKind::Metadata(
                                         MetadataKind::Any,
@@ -422,7 +474,9 @@ impl EventLoop {
                                     .add_path(path.clone()),
                                 );
                             }
-                            if event.mask.contains(EventMask::OPEN) {
+                            if event.mask.contains(EventMask::OPEN)
+                                && Self::is_watched_path(&self.watches, &path)
+                            {
                                 evs.push(
                                     Event::new(EventKind::Access(AccessKind::Open(
                                         AccessMode::Any,
@@ -1165,12 +1219,8 @@ mod tests {
 
         std::fs::rename(&path, &new_path).expect("rename");
 
-        rx.wait_ordered_exact([
-            expected(&path).rename_from(),
-            expected(&new_path).rename_to(), // this can be removed
-            expected([&path, &new_path]).rename_both(), // this can be removed
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).rename_from()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
@@ -1178,12 +1228,8 @@ mod tests {
 
         std::fs::rename(&new_path, &path).expect("rename2");
 
-        rx.wait_ordered_exact([
-            expected(&new_path).rename_from(), // this can be removed
-            expected(&path).rename_to(),
-            expected([&new_path, &path]).rename_both(), // this can be removed
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).rename_to()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
@@ -1353,19 +1399,9 @@ mod tests {
         std::fs::write(&overwriting_file, "321").expect("write2");
         std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
 
-        rx.wait_ordered_exact([
-            expected(&overwriting_file).create_file(),
-            expected(&overwriting_file).access_open_any(),
-            expected(&overwriting_file).access_close_write(),
-            expected(&overwriting_file).access_open_any(),
-            expected(&overwriting_file).modify_data_any().multiple(),
-            expected(&overwriting_file).access_close_write().multiple(),
-            expected(&overwriting_file).rename_from(),
-            expected(&overwritten_file).rename_to(),
-            expected([&overwriting_file, &overwritten_file]).rename_both(),
-        ])
-        .ensure_no_tail()
-        .ensure_trackers_len(1);
+        rx.wait_ordered_exact([expected(&overwritten_file).rename_to()])
+            .ensure_no_tail()
+            .ensure_trackers_len(1);
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
@@ -1611,8 +1647,6 @@ mod tests {
         rx.wait_ordered_exact([
             expected(&subdir).access_open_any(),
             expected(&path).rename_from(),
-            expected(&new_path).rename_to(), // this can be removed
-            expected([&path, &new_path]).rename_both(), // this can be removed
         ])
         .ensure_trackers_len(1)
         .ensure_no_tail();
