@@ -150,7 +150,7 @@ pub fn get_file_id_no_follow(path: impl AsRef<Path>) -> io::Result<FileId> {
 pub fn get_file_id(path: impl AsRef<Path>) -> io::Result<FileId> {
     let file = open_file(path)?;
 
-    unsafe { get_file_info_ex(&file).or_else(|_| get_file_info(&file)) }
+    get_file_info_ex(&file).or_else(|_| get_file_info(&file))
 }
 
 /// Get the `FileId` for the file or directory at `path` without following symlinks/reparse points
@@ -158,7 +158,7 @@ pub fn get_file_id(path: impl AsRef<Path>) -> io::Result<FileId> {
 pub fn get_file_id_no_follow(path: impl AsRef<Path>) -> io::Result<FileId> {
     let file = open_file_no_follow(path)?;
 
-    unsafe { get_file_info_ex(&file).or_else(|_| get_file_info(&file)) }
+    get_file_info_ex(&file).or_else(|_| get_file_info(&file))
 }
 
 /// Get the `FileId` with the low resolution variant for the file or directory at `path`
@@ -166,7 +166,7 @@ pub fn get_file_id_no_follow(path: impl AsRef<Path>) -> io::Result<FileId> {
 pub fn get_low_res_file_id(path: impl AsRef<Path>) -> io::Result<FileId> {
     let file = open_file(path)?;
 
-    unsafe { get_file_info(&file) }
+    get_file_info(&file)
 }
 
 /// Get the `FileId` with the low resolution variant for the file or directory at `path` without following symlinks/reparse points
@@ -174,7 +174,7 @@ pub fn get_low_res_file_id(path: impl AsRef<Path>) -> io::Result<FileId> {
 pub fn get_low_res_file_id_no_follow(path: impl AsRef<Path>) -> io::Result<FileId> {
     let file = open_file_no_follow(path)?;
 
-    unsafe { get_file_info(&file) }
+    get_file_info(&file)
 }
 
 /// Get the `FileId` with the high resolution variant for the file or directory at `path`
@@ -182,7 +182,7 @@ pub fn get_low_res_file_id_no_follow(path: impl AsRef<Path>) -> io::Result<FileI
 pub fn get_high_res_file_id(path: impl AsRef<Path>) -> io::Result<FileId> {
     let file = open_file(path)?;
 
-    unsafe { get_file_info_ex(&file) }
+    get_file_info_ex(&file)
 }
 
 /// Get the `FileId` with the high resolution variant for the file or directory at `path` without following symlinks/reparse points
@@ -190,58 +190,70 @@ pub fn get_high_res_file_id(path: impl AsRef<Path>) -> io::Result<FileId> {
 pub fn get_high_res_file_id_no_follow(path: impl AsRef<Path>) -> io::Result<FileId> {
     let file = open_file_no_follow(path)?;
 
-    unsafe { get_file_info_ex(&file) }
+    get_file_info_ex(&file)
 }
 
 #[cfg(target_family = "windows")]
-unsafe fn get_file_info_ex(file: &fs::File) -> Result<FileId, io::Error> {
-    use std::{mem, os::windows::prelude::*};
-    use windows_sys::Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
+fn get_file_info_ex(file: &fs::File) -> Result<FileId, io::Error> {
+    use std::{
+        mem::{self, MaybeUninit},
+        os::windows::prelude::*,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
     };
 
-    unsafe {
-        let mut info: FILE_ID_INFO = mem::zeroed();
-        #[expect(clippy::cast_possible_truncation)]
-        let ret = GetFileInformationByHandleEx(
-            file.as_raw_handle() as HANDLE,
+    let mut info = MaybeUninit::<FILE_ID_INFO>::zeroed();
+    // SAFETY: the arguments are valid
+    // - hfile: must be a handle to a file
+    // - fileinformationclass: must be a value of `FILE_INFO_BY_HANDLE_CLASS` enum
+    // - lpfileinformation: must be a valid pointer to a struct corresponding to the `fileinformationclass`
+    // - dwbufferlength: must be the size of the struct passed to `lpfileinformation`
+    let ret = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
             FileIdInfo,
-            (&raw mut info).cast(),
-            mem::size_of::<FILE_ID_INFO>() as u32,
-        );
-
-        if ret == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(FileId::new_high_res(
-            info.VolumeSerialNumber,
-            u128::from_le_bytes(info.FileId.Identifier),
-        ))
+            info.as_mut_ptr().cast(),
+            #[expect(clippy::cast_possible_truncation)]
+            {
+                mem::size_of::<FILE_ID_INFO>() as u32
+            },
+        )
+    };
+    if ret == 0 {
+        return Err(io::Error::last_os_error());
     }
+
+    // SAFETY: `info` is initialized by `GetFileInformationByHandleEx`.
+    let info = unsafe { info.assume_init() };
+    Ok(FileId::new_high_res(
+        info.VolumeSerialNumber,
+        u128::from_le_bytes(info.FileId.Identifier),
+    ))
 }
 
 #[cfg(target_family = "windows")]
-unsafe fn get_file_info(file: &fs::File) -> Result<FileId, io::Error> {
-    use std::{mem, os::windows::prelude::*};
-    use windows_sys::Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+fn get_file_info(file: &fs::File) -> Result<FileId, io::Error> {
+    use std::{mem::MaybeUninit, os::windows::prelude::*};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
 
-    unsafe {
-        let mut info: BY_HANDLE_FILE_INFORMATION = mem::zeroed();
-        let ret = GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &raw mut info);
-        if ret == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(FileId::new_low_res(
-            info.dwVolumeSerialNumber,
-            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-        ))
+    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: the arguments are valid
+    // - hfile: must be a handle to a file
+    // - lpfileinformation: must be a valid pointer to a `BY_HANDLE_FILE_INFORMATION
+    let ret = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+    if ret == 0 {
+        return Err(io::Error::last_os_error());
     }
+
+    // SAFETY: `info` is initialized by `GetFileInformationByHandle`.
+    let info = unsafe { info.assume_init() };
+    Ok(FileId::new_low_res(
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
 }
 
 #[cfg(target_family = "windows")]
