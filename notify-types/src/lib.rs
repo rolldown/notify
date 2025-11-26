@@ -10,6 +10,7 @@ mod tests {
     fn test_debug_impl() {
         macro_rules! assert_debug_impl {
             ($t:ty) => {{
+                #[expect(clippy::allow_attributes)]
                 #[allow(dead_code)]
                 trait NeedsDebug: std::fmt::Debug {}
                 impl NeedsDebug for $t {}

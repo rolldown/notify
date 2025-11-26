@@ -1,3 +1,7 @@
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "android")),
+    expect(dead_code)
+)]
 use std::{
     borrow::Borrow,
     collections::HashMap,
@@ -16,12 +20,11 @@ impl<L, R, V> BiHashMap<L, R, V, RandomState> {
         Self::default()
     }
 
-    #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+    #[cfg(test)]
     pub fn iter(&self) -> impl Iterator<Item = (&L, &R, &V)> {
         self.left.iter().map(|(l, (r, v))| (l, r, v))
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn clear(&mut self) {
         self.left.clear();
         self.right.clear();
@@ -56,7 +59,7 @@ where
         Q: Hash + Eq + ?Sized,
     {
         self.right.get(right.borrow()).map(|left| {
-            let (_, v) = self.left.get(left).unwrap();
+            let (_, v) = &self.left[left];
             (left, v)
         })
     }
@@ -69,7 +72,7 @@ where
         if let Some((old_right, old_value)) = self.left.insert(left.clone(), (right.clone(), value))
         {
             let old_left = self.right.remove(&old_right).unwrap();
-            self.right.insert(right.clone(), left.clone());
+            self.right.insert(right, left);
             Some((old_left, old_right, old_value))
         } else if let Some(old_left) = self.right.insert(right.clone(), left) {
             let (_, old_value) = self.left.remove(&old_left).unwrap();

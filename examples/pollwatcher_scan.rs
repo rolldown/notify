@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use notify::{Config, PollWatcher, WatchMode, Watcher, poll::ScanEvent};
 use std::path::Path;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

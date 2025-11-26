@@ -18,19 +18,19 @@ fn create_temp_files(dir: &std::path::Path, count: usize) -> Vec<PathBuf> {
         let file_path = match i % 10 {
             0..=3 => {
                 // Root directory (40%)
-                dir.join(format!("file_{}.txt", i))
+                dir.join(format!("file_{i}.txt"))
             }
             4..=6 => {
                 // First-level subdirectories (30%)
                 let subdir = dir.join(format!("dir{}", i % 3));
                 std::fs::create_dir_all(&subdir).expect("Failed to create subdirectory");
-                subdir.join(format!("file_{}.txt", i))
+                subdir.join(format!("file_{i}.txt"))
             }
             _ => {
                 // Nested subdirectories (30%)
                 let nested_dir = dir.join("nested").join(format!("deep{}", i % 2));
                 std::fs::create_dir_all(&nested_dir).expect("Failed to create nested directory");
-                nested_dir.join(format!("file_{}.txt", i))
+                nested_dir.join(format!("file_{i}.txt"))
             }
         };
 
@@ -96,7 +96,7 @@ fn bench_inotify_paths_mut(c: &mut Criterion) {
 }
 
 // FSEvent benchmarks (macOS)
-#[cfg(all(target_os = "macos", feature = "macos_fsevent"))]
+#[cfg(all(target_os = "macos", not(feature = "macos_kqueue")))]
 fn bench_fsevent_paths_mut(c: &mut Criterion) {
     use notify::FsEventWatcher;
 

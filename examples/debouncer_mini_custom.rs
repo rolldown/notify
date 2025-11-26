@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use std::{path::Path, time::Duration};
 
 use notify::{self, WatchMode};

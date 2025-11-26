@@ -25,6 +25,9 @@ macos_fsevent = ["rolldown-notify/macos_fsevent"]
 macos_kqueue = ["rolldown-notify/macos_kqueue"]
 serialization-compat-6 = ["rolldown-notify/serialization-compat-6"]
 
+[lints]
+workspace = true
+
 [dependencies]
 rolldown-notify.workspace = true
 rolldown-notify-types.workspace = true

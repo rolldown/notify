@@ -144,8 +144,8 @@ impl ReadDirectoryChangesServer {
                             tracing::error!(?e, "failed to send Watch result");
                         }
                     }
-                    Action::Unwatch(path) => self.remove_watch(path),
-                    Action::UnwatchRaw(path) => self.remove_watch_raw(path),
+                    Action::Unwatch(path) => self.remove_watch(&path),
+                    Action::UnwatchRaw(path) => self.remove_watch_raw(&path),
                     Action::Stop => {
                         stopped = true;
                         for (ws, _) in self.watch_handles.values() {
@@ -154,7 +154,7 @@ impl ReadDirectoryChangesServer {
                         break;
                     }
                     Action::Configure(config, tx) => {
-                        self.configure_raw_mode(config, tx);
+                        Self::configure_raw_mode(config, &tx);
                     }
                     #[cfg(test)]
                     Action::GetWatchHandles(tx) => {
@@ -182,7 +182,7 @@ impl ReadDirectoryChangesServer {
 
     #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<PathBuf> {
-        let existing_watch_mode = self.watches.borrow().get(&path).cloned();
+        let existing_watch_mode = self.watches.borrow().get(&path).copied();
         if let Some(existing) = existing_watch_mode {
             let need_upgrade_to_recursive = match existing.recursive_mode {
                 RecursiveMode::Recursive => false,
@@ -327,20 +327,25 @@ impl ReadDirectoryChangesServer {
             complete_sem: semaphore,
         };
         self.watch_handles.insert(path, (ws, is_recursive));
-        start_read(&rd, self.event_handler.clone(), handle, self.tx.clone());
+        start_read(
+            &rd,
+            Arc::clone(&self.event_handler),
+            handle,
+            self.tx.clone(),
+        );
         Ok(())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_watch(&mut self, path: PathBuf) {
-        if self.watches.borrow_mut().remove(&path).is_some() {
+    fn remove_watch(&mut self, path: &Path) {
+        if self.watches.borrow_mut().remove(path).is_some() {
             self.remove_watch_raw(path);
         }
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_watch_raw(&mut self, path: PathBuf) {
-        if let Some((ws, _)) = self.watch_handles.remove(&path) {
+    fn remove_watch_raw(&mut self, path: &Path) {
+        if let Some((ws, _)) = self.watch_handles.remove(path) {
             stop_watch(&ws);
         } else if let Some(parent_path) = path.parent()
             && self.watches.borrow().get(parent_path).is_none()
@@ -359,7 +364,7 @@ impl ReadDirectoryChangesServer {
         }
     }
 
-    fn configure_raw_mode(&mut self, _config: Config, tx: BoundSender<Result<bool>>) {
+    fn configure_raw_mode(_config: Config, tx: &BoundSender<Result<bool>>) {
         tx.send(Ok(false))
             .expect("configuration channel disconnect");
     }
@@ -404,25 +409,27 @@ fn start_read(
         | FILE_NOTIFY_CHANGE_CREATION
         | FILE_NOTIFY_CHANGE_SECURITY;
 
-    let monitor_subdir = if request.data.is_recursive { 1 } else { 0 };
+    let monitor_subdir = i32::from(request.data.is_recursive);
 
     unsafe {
-        let overlapped = alloc::alloc_zeroed(alloc::Layout::new::<OVERLAPPED>()) as *mut OVERLAPPED;
+        #[expect(clippy::cast_ptr_alignment)]
+        let overlapped =
+            alloc::alloc_zeroed(alloc::Layout::new::<OVERLAPPED>()).cast::<OVERLAPPED>();
         // When using callback based async requests, we are allowed to use the hEvent member
         // for our own purposes
 
         let request = Box::leak(request);
-        (*overlapped).hEvent = request as *mut _ as _;
+        (*overlapped).hEvent = std::ptr::from_mut(request).cast();
 
         // This is using an asynchronous call with a completion routine for receiving notifications
         // An I/O completion port would probably be more performant
         let ret = ReadDirectoryChangesW(
             handle,
-            request.buffer.as_mut_ptr() as *mut c_void,
+            request.buffer.as_mut_ptr().cast::<c_void>(),
             BUF_SIZE,
             monitor_subdir,
             flags,
-            &mut 0u32 as *mut u32, // not used for async reqs
+            std::ptr::from_mut::<u32>(&mut 0u32), // not used for async reqs
             overlapped,
             Some(handle_event),
         );
@@ -439,13 +446,14 @@ fn start_read(
     }
 }
 
+#[expect(clippy::too_many_lines)]
 unsafe extern "system" fn handle_event(
     error_code: u32,
     _bytes_written: u32,
     overlapped: *mut OVERLAPPED,
 ) {
     let overlapped: Box<OVERLAPPED> = unsafe { Box::from_raw(overlapped) };
-    let request: Box<ReadDirectoryRequest> = unsafe { Box::from_raw(overlapped.hEvent as *mut _) };
+    let request: Box<ReadDirectoryRequest> = unsafe { Box::from_raw(overlapped.hEvent.cast()) };
 
     let release_semaphore =
         || unsafe { ReleaseSemaphore(request.data.complete_sem, 1, ptr::null_mut()) };
@@ -516,7 +524,7 @@ unsafe extern "system" fn handle_event(
     // Get the next request queued up as soon as possible
     start_read(
         &request.data,
-        request.event_handler.clone(),
+        Arc::clone(&request.event_handler),
         request.handle,
         request.action_tx,
     );
@@ -531,13 +539,15 @@ unsafe extern "system" fn handle_event(
     // they are aligned to 16bit (WCHAR) boundary instead of 32bit required by FILE_NOTIFY_INFORMATION.
     // Hence, we need to use `read_unaligned` here to avoid UB.
     let mut cur_entry =
-        unsafe { ptr::read_unaligned(cur_offset as *const FILE_NOTIFY_INFORMATION) };
+        unsafe { ptr::read_unaligned(cur_offset.cast::<FILE_NOTIFY_INFORMATION>()) };
     loop {
         // filename length is size in bytes, so / 2
         let len = cur_entry.FileNameLength as usize / 2;
         let encoded_path: &[u16] = unsafe {
             slice::from_raw_parts(
-                cur_offset.add(std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName)) as _,
+                cur_offset
+                    .add(std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName))
+                    .cast(),
                 len,
             )
         };
@@ -597,14 +607,14 @@ unsafe extern "system" fn handle_event(
                     event_handler(Ok(ev));
                 }
                 _ => (),
-            };
+            }
         }
 
         if cur_entry.NextEntryOffset == 0 {
             break;
         }
         cur_offset = unsafe { cur_offset.add(cur_entry.NextEntryOffset as usize) };
-        cur_entry = unsafe { ptr::read_unaligned(cur_offset as *const FILE_NOTIFY_INFORMATION) };
+        cur_entry = unsafe { ptr::read_unaligned(cur_offset.cast::<FILE_NOTIFY_INFORMATION>()) };
     }
 
     tracing::trace!(
@@ -664,7 +674,7 @@ impl ReadDirectoryChangesWatcher {
         }
     }
 
-    fn send_action_require_ack(&mut self, action: Action, pb: &PathBuf) -> Result<()> {
+    fn send_action_require_ack(&mut self, action: Action, pb: &Path) -> Result<()> {
         self.tx
             .send(action)
             .map_err(|_| Error::generic("Error sending to internal channel"))?;
@@ -677,14 +687,15 @@ impl ReadDirectoryChangesWatcher {
             .recv()
             .map_err(|_| Error::generic("Error receiving from command channel"))??;
 
-        if pb.as_path() != ack_pb.as_path() {
-            Err(Error::generic(&format!(
-                "Expected ack for {:?} but got \
-                 ack for {:?}",
-                pb, ack_pb
-            )))
-        } else {
+        if pb == ack_pb.as_path() {
             Ok(())
+        } else {
+            Err(Error::generic(&format!(
+                "Expected ack for {} but got \
+                 ack for {}",
+                pb.display(),
+                ack_pb.display()
+            )))
         }
     }
 
@@ -716,6 +727,7 @@ impl ReadDirectoryChangesWatcher {
 
 impl Watcher for ReadDirectoryChangesWatcher {
     #[tracing::instrument(level = "debug", skip(event_handler))]
+    #[expect(clippy::used_underscore_binding)]
     fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
         let event_handler = Arc::new(Mutex::new(event_handler));
         Self::create(event_handler)
@@ -815,7 +827,7 @@ pub mod tests {
     #[test]
     fn create_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -832,7 +844,7 @@ pub mod tests {
     #[test]
     fn create_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
 
@@ -875,7 +887,7 @@ pub mod tests {
     #[ignore = "TODO: not implemented"]
     fn create_self_file_nested() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry/nested");
 
@@ -895,7 +907,7 @@ pub mod tests {
     #[test]
     fn write_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -917,7 +929,7 @@ pub mod tests {
     #[test]
     fn chmod_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let file = std::fs::File::create_new(&path).expect("create");
@@ -941,7 +953,7 @@ pub mod tests {
     #[test]
     fn rename_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -967,7 +979,7 @@ pub mod tests {
     #[test]
     fn rename_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -997,7 +1009,7 @@ pub mod tests {
     #[test]
     fn rename_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1040,7 +1052,7 @@ pub mod tests {
     #[test]
     fn delete_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -1062,7 +1074,7 @@ pub mod tests {
     #[test]
     fn delete_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -1088,7 +1100,7 @@ pub mod tests {
     #[test]
     fn delete_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -1114,7 +1126,7 @@ pub mod tests {
     #[test]
     fn create_write_overwrite() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let overwritten_file = tmpdir.path().join("overwritten_file");
         let overwriting_file = tmpdir.path().join("overwriting_file");
         std::fs::write(&overwritten_file, "123").expect("write1");
@@ -1146,7 +1158,7 @@ pub mod tests {
     #[test]
     fn create_self_write_overwrite() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let overwritten_file = tmpdir.path().join("overwritten_file");
         let overwriting_file = tmpdir.path().join("overwriting_file");
         std::fs::write(&overwritten_file, "123").expect("write1");
@@ -1171,7 +1183,7 @@ pub mod tests {
     #[test]
     fn create_self_write_overwrite_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let overwritten_file = tmpdir.path().join("overwritten_file");
         let overwriting_file = tmpdir.path().join("overwriting_file");
         std::fs::write(&overwritten_file, "123").expect("write1");
@@ -1199,7 +1211,7 @@ pub mod tests {
     #[test]
     fn create_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -1216,7 +1228,7 @@ pub mod tests {
     #[test]
     fn chmod_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1240,7 +1252,7 @@ pub mod tests {
     #[test]
     fn rename_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_path");
@@ -1266,7 +1278,7 @@ pub mod tests {
     #[test]
     fn delete_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1288,7 +1300,7 @@ pub mod tests {
     #[test]
     fn delete_self_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1316,7 +1328,7 @@ pub mod tests {
     #[test]
     fn delete_self_dir_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1345,7 +1357,7 @@ pub mod tests {
     #[test]
     fn rename_dir_twice() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_path");
@@ -1376,7 +1388,7 @@ pub mod tests {
     fn move_out_of_watched_dir() {
         let tmpdir = testdir();
         let subdir = tmpdir.path().join("subdir");
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = subdir.join("entry");
         std::fs::create_dir_all(&subdir).expect("create_dir_all");
@@ -1398,7 +1410,7 @@ pub mod tests {
     #[test]
     fn create_write_write_rename_write_remove() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let file1 = tmpdir.path().join("entry");
         let file2 = tmpdir.path().join("entry2");
@@ -1433,7 +1445,7 @@ pub mod tests {
     #[test]
     fn rename_twice() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1464,7 +1476,7 @@ pub mod tests {
     #[test]
     fn set_file_mtime() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let file = std::fs::File::create_new(&path).expect("create");
@@ -1488,7 +1500,7 @@ pub mod tests {
     #[test]
     fn write_file_non_recursive_watch() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1526,10 +1538,7 @@ pub mod tests {
 
         let events = rx.iter().collect::<Vec<_>>();
         assert!(events.is_empty(), "unexpected events: {events:#?}");
-        assert_eq!(
-            watcher.get_watch_handles(),
-            HashSet::from([subdir.to_path_buf()])
-        );
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir]));
     }
 
     #[test]
@@ -1545,7 +1554,7 @@ pub mod tests {
         let nested8 = tmpdir.path().join("1/2/3/4/5/6/7/8");
         let nested9 = tmpdir.path().join("1/2/3/4/5/6/7/8/9");
 
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         watcher.watch_recursively(&tmpdir);
 
@@ -1571,7 +1580,7 @@ pub mod tests {
     #[test]
     fn upgrade_to_recursive() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("upgrade");
         let deep = tmpdir.path().join("upgrade/deep");

@@ -127,6 +127,7 @@ impl Config {
     /// Set timeout
     ///
     /// Timeout is the amount of time after which a debounced event is emitted or a continuous event is send, if there still are events incoming for the specific path.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -135,11 +136,13 @@ impl Config {
     ///
     /// When `batch_mode` is enabled, events may be delayed (at most 2x the specified timeout) and delivered with others.
     /// If disabled, all events are delivered immediately when their debounce timeout is reached.
+    #[must_use]
     pub fn with_batch_mode(mut self, batch_mode: bool) -> Self {
         self.batch_mode = batch_mode;
         self
     }
     /// Set [`notify::Config`] for the backend
+    #[must_use]
     pub fn with_notify_config(mut self, notify_config: notify::Config) -> Self {
         self.notify_config = notify_config;
         self
@@ -229,7 +232,7 @@ impl DebounceDataInner {
         Self {
             timeout,
             debounce_deadline: None,
-            event_map: Default::default(),
+            event_map: HashMap::default(),
             batch_mode,
         }
     }
@@ -311,7 +314,7 @@ impl DebounceDataInner {
         if self.debounce_deadline.is_none() {
             self.debounce_deadline = Some(time + self.timeout);
         }
-        for path in event.paths.into_iter() {
+        for path in event.paths {
             if let Some(v) = self.event_map.get_mut(&path) {
                 v.update = time;
             } else {
@@ -346,6 +349,7 @@ impl<T: Watcher> Drop for Debouncer<T> {
 }
 
 /// Creates a new debounced watcher with custom configuration.
+#[expect(clippy::needless_pass_by_value)]
 #[tracing::instrument(level = "debug", skip(event_handler))]
 pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
     config: Config,
@@ -374,7 +378,7 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
                                 }
                             }
                             Ok(InnerEvent::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
-                                run = false
+                                run = false;
                             }
                         }
                     }
@@ -384,8 +388,7 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
                             Ok(event) => data.add_event(event),
                             Err(err) => event_handler.handle_event(Err(err)),
                         },
-                        Ok(InnerEvent::Shutdown) => run = false,
-                        Err(_) => run = false,
+                        Ok(InnerEvent::Shutdown) | Err(_) => run = false,
                     },
                 }
             }
@@ -430,6 +433,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    #[expect(clippy::print_stdout)]
     #[test]
     fn integration() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;

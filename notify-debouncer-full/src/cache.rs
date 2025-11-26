@@ -50,8 +50,9 @@ pub struct FileIdMap {
 
 impl FileIdMap {
     /// Construct an empty cache.
+    #[must_use]
     pub fn new() -> Self {
-        Default::default()
+        FileIdMap::default()
     }
 
     fn dir_scan_depth(is_recursive: bool) -> usize {
@@ -94,8 +95,9 @@ pub struct NoCache;
 
 impl NoCache {
     /// Construct an empty cache.
+    #[must_use]
     pub fn new() -> Self {
-        Default::default()
+        NoCache
     }
 }
 

@@ -90,7 +90,7 @@ use file_id::FileId;
 use notify::{
     Error, ErrorKind, Event, EventKind, PathsMut, RecommendedWatcher, RecursiveMode, TargetMode,
     WatchMode, Watcher, WatcherKind,
-    event::{ModifyKind, RemoveKind, RenameMode},
+    event::{EventAttributes, ModifyKind, RemoveKind, RenameMode},
 };
 
 /// The set of requirements for watcher debounce event handling functions.
@@ -241,11 +241,11 @@ impl<T: FileIdCache> DebounceDataInner<T> {
                     tracing::trace!("removed candidate event: {event:?}");
                     events_expired.remove(idx);
 
-                    kind_index.values_mut().for_each(|i| {
+                    for i in kind_index.values_mut() {
                         if *i > idx {
-                            *i -= 1
+                            *i -= 1;
                         }
-                    })
+                    }
                 }
 
                 if now.saturating_duration_since(event.time) >= self.timeout {
@@ -291,12 +291,9 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             return;
         }
 
-        let path = match event.paths.first() {
-            Some(path) => path,
-            None => {
-                tracing::info!("skipping event with no paths: {event:?}");
-                return;
-            }
+        let Some(path) = event.paths.first() else {
+            tracing::info!("skipping event with no paths: {event:?}");
+            return;
         };
 
         match &event.kind {
@@ -308,6 +305,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
                 self.push_event(event, now());
             }
             EventKind::Modify(ModifyKind::Name(rename_mode)) => {
+                #[expect(clippy::match_same_arms)]
                 match rename_mode {
                     RenameMode::Any => {
                         if event.paths[0].exists() {
@@ -348,7 +346,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
         }
     }
 
-    fn watch_mode(&mut self, path: &Path) -> WatchMode {
+    fn watch_mode(&self, path: &Path) -> WatchMode {
         self.roots
             .iter()
             .find_map(|(root, watch_mode)| {
@@ -483,7 +481,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
                     event: Event {
                         kind: EventKind::Remove(RemoveKind::Any),
                         paths: vec![event.paths[0].clone()],
-                        attrs: Default::default(),
+                        attrs: EventAttributes::default(),
                     },
                     time: original_time,
                 };
@@ -540,7 +538,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             }
         } else {
             self.queues.insert(
-                path.to_path_buf(),
+                path.clone(),
                 Queue {
                     events: [DebouncedEvent::new(event, time)].into(),
                 },
@@ -586,7 +584,7 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
     #[deprecated = "`Debouncer` now manages root paths automatically. Remove all calls to `add_root` and `remove_root`."]
     pub fn cache(&mut self) {}
 
-    fn add_root(&mut self, path: impl Into<PathBuf>, watch_mode: WatchMode) {
+    fn add_root(&self, path: impl Into<PathBuf>, watch_mode: WatchMode) {
         let path = path.into();
 
         let mut data = self.data.lock().unwrap();
@@ -601,7 +599,7 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
         data.cache.add_path(&path, watch_mode);
     }
 
-    fn remove_root(&mut self, path: impl AsRef<Path>) {
+    fn remove_root(&self, path: impl AsRef<Path>) {
         let mut data = self.data.lock().unwrap();
 
         data.roots.retain(|(root, _)| !root.starts_with(&path));
@@ -629,6 +627,7 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
         self.watcher.configure(option)
     }
 
+    #[must_use]
     pub fn kind() -> WatcherKind
     where
         Self: Sized,
@@ -648,6 +647,9 @@ impl<T: Watcher, C: FileIdCache> Drop for Debouncer<T, C> {
 /// Timeout is the amount of time after which a debounced event is emitted.
 ///
 /// If `tick_rate` is `None`, notify will select a tick rate that is 1/4 of the provided timeout.
+///
+/// # Panics
+/// Panics if the internal mutex is poisoned.
 #[tracing::instrument(level = "debug", skip(event_handler, file_id_cache))]
 pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + Send + 'static>(
     timeout: Duration,
@@ -676,8 +678,8 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + S
         })?,
     };
 
-    let data_c = data.clone();
-    let stop_c = stop.clone();
+    let data_c = Arc::clone(&data);
+    let stop_c = Arc::clone(&stop);
     let thread = std::thread::Builder::new()
         .name("notify-rs debouncer loop".to_string())
         .spawn(move || {
@@ -702,7 +704,7 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + S
             }
         })?;
 
-    let data_c = data.clone();
+    let data_c = Arc::clone(&data);
     let watcher = T::new(
         move |e: Result<Event, Error>| {
             let mut lock = data_c.lock().unwrap();
@@ -934,6 +936,7 @@ mod tests {
         }
     }
 
+    #[expect(clippy::print_stdout)]
     #[test]
     fn integration() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;

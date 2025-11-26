@@ -94,6 +94,7 @@ pub enum FileId {
 }
 
 impl FileId {
+    #[must_use]
     pub fn new_inode(device_id: u64, inode_number: u64) -> Self {
         FileId::Inode {
             device_id,
@@ -101,6 +102,7 @@ impl FileId {
         }
     }
 
+    #[must_use]
     pub fn new_low_res(volume_serial_number: u32, file_index: u64) -> Self {
         FileId::LowRes {
             volume_serial_number,
@@ -108,6 +110,7 @@ impl FileId {
         }
     }
 
+    #[must_use]
     pub fn new_high_res(volume_serial_number: u64, file_id: u128) -> Self {
         FileId::HighRes {
             volume_serial_number,
@@ -200,16 +203,17 @@ unsafe fn get_file_info_ex(file: &fs::File) -> Result<FileId, io::Error> {
 
     unsafe {
         let mut info: FILE_ID_INFO = mem::zeroed();
+        #[expect(clippy::cast_possible_truncation)]
         let ret = GetFileInformationByHandleEx(
             file.as_raw_handle() as HANDLE,
             FileIdInfo,
-            &mut info as *mut FILE_ID_INFO as _,
+            (&raw mut info).cast(),
             mem::size_of::<FILE_ID_INFO>() as u32,
         );
 
         if ret == 0 {
             return Err(io::Error::last_os_error());
-        };
+        }
 
         Ok(FileId::new_high_res(
             info.VolumeSerialNumber,
@@ -228,14 +232,14 @@ unsafe fn get_file_info(file: &fs::File) -> Result<FileId, io::Error> {
 
     unsafe {
         let mut info: BY_HANDLE_FILE_INFORMATION = mem::zeroed();
-        let ret = GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info);
+        let ret = GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &raw mut info);
         if ret == 0 {
             return Err(io::Error::last_os_error());
-        };
+        }
 
         Ok(FileId::new_low_res(
             info.dwVolumeSerialNumber,
-            ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
         ))
     }
 }

@@ -90,7 +90,8 @@ unsafe impl Send for FsEventWatcher {}
 // It's Sync because all methods that change the mutable state use `&mut self`.
 unsafe impl Sync for FsEventWatcher {}
 
-fn translate_flags(flags: StreamFlags, precise: bool) -> Vec<Event> {
+#[expect(clippy::too_many_lines)]
+fn translate_flags(flags: &StreamFlags, precise: bool) -> Vec<Event> {
     let mut evs = Vec::new();
 
     // «Denotes a sentinel event sent to mark the end of the "historical" events
@@ -254,9 +255,7 @@ extern "C" fn release_context(info: *const libc::c_void) {
     //
     // [docs]: https://developer.apple.com/documentation/coreservices/fseventstreamcontext?language=objc
     unsafe {
-        drop(Box::from_raw(
-            info as *const StreamContextInfo as *mut StreamContextInfo,
-        ));
+        drop(Box::from_raw(info.cast::<StreamContextInfo>().cast_mut()));
     }
 }
 
@@ -290,10 +289,14 @@ impl PathsMut for FsEventPathsMut<'_> {
 }
 
 impl FsEventWatcher {
-    fn from_event_handler(event_handler: Arc<Mutex<dyn EventHandler>>) -> Result<Self> {
-        Ok(FsEventWatcher {
+    fn from_event_handler(event_handler: Arc<Mutex<dyn EventHandler>>) -> Self {
+        FsEventWatcher {
             paths: unsafe {
-                cf::CFArrayCreateMutable(cf::kCFAllocatorDefault, 0, &cf::kCFTypeArrayCallBacks)
+                cf::CFArrayCreateMutable(
+                    cf::kCFAllocatorDefault,
+                    0,
+                    &raw const cf::kCFTypeArrayCallBacks,
+                )
             },
             since_when: fs::kFSEventStreamEventIdSinceNow,
             latency: 0.0,
@@ -301,7 +304,7 @@ impl FsEventWatcher {
             event_handler,
             runloop: None,
             recursive_info: HashMap::new(),
-        })
+        }
     }
 
     fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
@@ -330,7 +333,7 @@ impl FsEventWatcher {
 
         if let Some((runloop, thread_handle)) = self.runloop.take() {
             unsafe {
-                let runloop = runloop as *mut raw::c_void;
+                let runloop = runloop.cast::<raw::c_void>();
 
                 while CFRunLoopIsWaiting(runloop) == 0 {
                     thread::yield_now();
@@ -422,13 +425,13 @@ impl FsEventWatcher {
         // stream is closed. This means we will leak the context if we panic before reaching
         // `FSEventStreamRelease`.
         let context = Box::into_raw(Box::new(StreamContextInfo {
-            event_handler: self.event_handler.clone(),
+            event_handler: Arc::clone(&self.event_handler),
             recursive_info: self.recursive_info.clone(),
         }));
 
         let stream_context = fs::FSEventStreamContext {
             version: 0,
-            info: context as *mut libc::c_void,
+            info: context.cast::<libc::c_void>(),
             retain: None,
             release: Some(release_context),
             copy_description: None,
@@ -438,7 +441,7 @@ impl FsEventWatcher {
             fs::FSEventStreamCreate(
                 cf::kCFAllocatorDefault,
                 callback,
-                &stream_context,
+                &raw const stream_context,
                 self.paths,
                 self.since_when,
                 self.latency,
@@ -512,7 +515,7 @@ impl FsEventWatcher {
         Ok(())
     }
 
-    fn configure_raw_mode(&mut self, _config: Config, tx: Sender<Result<bool>>) {
+    fn configure_raw_mode(_config: Config, tx: &Sender<Result<bool>>) {
         tx.send(Ok(false))
             .expect("configuration channel disconnect");
     }
@@ -534,7 +537,7 @@ extern "C" fn callback(
             event_paths,
             event_flags,
             event_ids,
-        )
+        );
     }
 }
 
@@ -558,7 +561,7 @@ unsafe fn callback_impl(
 
         let flag = unsafe { *event_flags.add(p) };
         let flag = StreamFlags::from_bits(flag).unwrap_or_else(|| {
-            panic!("Unable to decode StreamFlags: {}", flag);
+            panic!("Unable to decode StreamFlags: {flag}");
         });
 
         tracing::trace!(
@@ -589,7 +592,7 @@ unsafe fn callback_impl(
 
         tracing::trace!(?path, ?flag, "FSEvent event received");
 
-        for ev in translate_flags(flag, true).into_iter() {
+        for ev in translate_flags(&flag, true) {
             // TODO: precise
             let ev = ev.add_path(path.clone());
             let mut event_handler = event_handler.lock().expect("lock not to be poisoned");
@@ -601,8 +604,11 @@ unsafe fn callback_impl(
 impl Watcher for FsEventWatcher {
     /// Create a new watcher.
     #[tracing::instrument(level = "debug", skip(event_handler))]
+    #[expect(clippy::used_underscore_binding)]
     fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
-        Self::from_event_handler(Arc::new(Mutex::new(event_handler)))
+        Ok(Self::from_event_handler(Arc::new(Mutex::new(
+            event_handler,
+        ))))
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -623,7 +629,7 @@ impl Watcher for FsEventWatcher {
     #[tracing::instrument(level = "debug", skip(self))]
     fn configure(&mut self, config: Config) -> Result<bool> {
         let (tx, rx) = unbounded();
-        self.configure_raw_mode(config, tx);
+        Self::configure_raw_mode(config, &tx);
         rx.recv()?
     }
 
@@ -654,6 +660,7 @@ mod tests {
         channel()
     }
 
+    #[expect(clippy::print_stdout)]
     #[test]
     fn test_fsevent_watcher_drop() {
         use super::*;
@@ -664,7 +671,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
 
         {
-            let mut watcher = FsEventWatcher::new(tx, Default::default()).unwrap();
+            let mut watcher = FsEventWatcher::new(tx, Config::default()).unwrap();
             watcher.watch(dir.path(), WatchMode::recursive()).unwrap();
             thread::sleep(Duration::from_millis(2000));
             println!("is running -> {}", watcher.is_running());
@@ -692,7 +699,7 @@ mod tests {
 
     #[test]
     fn does_not_crash_with_empty_path() {
-        let mut watcher = FsEventWatcher::new(|_| {}, Default::default()).unwrap();
+        let mut watcher = FsEventWatcher::new(|_| {}, Config::default()).unwrap();
 
         let watch_result = watcher.watch(Path::new(""), WatchMode::recursive());
         assert!(
@@ -722,7 +729,7 @@ mod tests {
     #[test]
     fn create_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -734,7 +741,7 @@ mod tests {
     #[test]
     fn create_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
 
@@ -752,7 +759,7 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
 
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         watcher.watch_recursively(&tmpdir);
 
@@ -764,7 +771,7 @@ mod tests {
     #[test]
     fn chmod_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let file = std::fs::File::create_new(&path).expect("create");
@@ -780,7 +787,7 @@ mod tests {
     #[test]
     fn rename_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -796,7 +803,7 @@ mod tests {
     #[test]
     fn rename_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -816,7 +823,7 @@ mod tests {
     #[test]
     fn rename_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -854,7 +861,7 @@ mod tests {
     #[test]
     fn delete_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -868,7 +875,7 @@ mod tests {
     #[test]
     fn delete_self_file() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -886,7 +893,7 @@ mod tests {
     #[test]
     fn delete_self_file_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let file = tmpdir.path().join("file");
         std::fs::write(&file, "").expect("write");
 
@@ -910,7 +917,7 @@ mod tests {
     #[test]
     fn create_write_overwrite() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         let overwritten_file = tmpdir.path().join("overwritten_file");
         let overwriting_file = tmpdir.path().join("overwriting_file");
         std::fs::write(&overwritten_file, "123").expect("write1");
@@ -932,7 +939,7 @@ mod tests {
     #[test]
     fn create_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
         watcher.watch_recursively(&tmpdir);
 
         let path = tmpdir.path().join("entry");
@@ -944,7 +951,7 @@ mod tests {
     #[test]
     fn chmod_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -960,7 +967,7 @@ mod tests {
     #[test]
     fn rename_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_path");
@@ -978,7 +985,7 @@ mod tests {
     #[test]
     fn delete_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -992,7 +999,7 @@ mod tests {
     #[test]
     fn delete_self_dir() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1010,7 +1017,7 @@ mod tests {
     #[test]
     fn delete_self_dir_no_track() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create_dir");
@@ -1037,7 +1044,7 @@ mod tests {
     #[test]
     fn rename_dir_twice() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let new_path = tmpdir.path().join("new_path");
@@ -1059,7 +1066,7 @@ mod tests {
     fn move_out_of_watched_dir() {
         let tmpdir = testdir();
         let subdir = tmpdir.path().join("subdir");
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = subdir.join("entry");
         std::fs::create_dir_all(&subdir).expect("create_dir_all");
@@ -1077,7 +1084,7 @@ mod tests {
     #[ignore = "https://github.com/notify-rs/notify/issues/729"]
     fn create_write_write_rename_write_remove() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let file1 = tmpdir.path().join("entry");
         let file2 = tmpdir.path().join("entry2");
@@ -1105,7 +1112,7 @@ mod tests {
     #[test]
     fn rename_twice() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1127,7 +1134,7 @@ mod tests {
     #[test]
     fn set_file_mtime() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         let file = std::fs::File::create_new(&path).expect("create");
@@ -1147,7 +1154,7 @@ mod tests {
     #[test]
     fn write_file_non_recursive_watch() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("entry");
         std::fs::File::create_new(&path).expect("create");
@@ -1162,7 +1169,7 @@ mod tests {
     #[test]
     fn write_to_a_hardlink_pointed_to_the_watched_file_triggers_an_event() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let subdir = tmpdir.path().join("subdir");
         let subdir2 = tmpdir.path().join("subdir2");
@@ -1194,7 +1201,7 @@ mod tests {
         let nested8 = tmpdir.path().join("1/2/3/4/5/6/7/8");
         let nested9 = tmpdir.path().join("1/2/3/4/5/6/7/8/9");
 
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         watcher.watch_recursively(&tmpdir);
 
@@ -1216,7 +1223,7 @@ mod tests {
     #[test]
     fn upgrade_to_recursive() {
         let tmpdir = testdir();
-        let (mut watcher, mut rx) = watcher();
+        let (mut watcher, rx) = watcher();
 
         let path = tmpdir.path().join("upgrade");
         let deep = tmpdir.path().join("upgrade/deep");

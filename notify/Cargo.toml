@@ -27,6 +27,9 @@ macos_kqueue = ["kqueue", "mio"]
 macos_fsevent = ["fsevent-sys"]
 serialization-compat-6 = ["rolldown-notify-types/serialization-compat-6"]
 
+[lints]
+workspace = true
+
 [dependencies]
 rolldown-notify-types.workspace = true
 crossbeam-channel = { workspace = true, optional = true }

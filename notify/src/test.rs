@@ -35,7 +35,7 @@ pub enum TryRecvError {
 impl Receiver {
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
 
-    fn wait_expected<C: ExpectedEvents>(&mut self, mut state: ExpectedState<C>) -> WaitState {
+    fn wait_expected<C: ExpectedEvents>(&self, mut state: ExpectedState<C>) -> WaitState {
         self.detect_changes();
         let mut trackers = Trackers::default();
         while !state.is_empty() {
@@ -43,7 +43,7 @@ impl Receiver {
                 Ok(res) => match res {
                     Ok(event) => {
                         trackers.try_push(&event);
-                        state.check(event)
+                        state.check(&event);
                     }
                     Err(err) => panic!(
                         "Got an error from the watcher {:?}: {err:?}. State: {state:#?}",
@@ -73,43 +73,40 @@ impl Receiver {
 
     /// Waits for the events in the same order as they provided and fails on an unexpected one.
     pub fn wait_ordered_exact(
-        &mut self,
+        &self,
         expected: impl IntoIterator<Item = ExpectedEvent>,
     ) -> WaitState {
         self.wait_expected(ExpectedState::ordered(expected).disallow_unexpected())
     }
 
     /// Waits for the events in the same order as they provided and ignores unexpected ones.
-    pub fn wait_ordered(&mut self, expected: impl IntoIterator<Item = ExpectedEvent>) -> WaitState {
+    pub fn wait_ordered(&self, expected: impl IntoIterator<Item = ExpectedEvent>) -> WaitState {
         self.wait_expected(ExpectedState::ordered(expected).allow_unexpected())
     }
 
     /// Waits for the events in any order and fails on an unexpected one.
     pub fn wait_unordered_exact(
-        &mut self,
+        &self,
         expected: impl IntoIterator<Item = ExpectedEvent>,
     ) -> WaitState {
         self.wait_expected(ExpectedState::unordered(expected).disallow_unexpected())
     }
 
     /// Waits for the events in any order and ignores unexpected ones.
-    pub fn wait_unordered(
-        &mut self,
-        expected: impl IntoIterator<Item = ExpectedEvent>,
-    ) -> WaitState {
+    pub fn wait_unordered(&self, expected: impl IntoIterator<Item = ExpectedEvent>) -> WaitState {
         self.wait_expected(ExpectedState::unordered(expected).allow_unexpected())
     }
 
-    pub fn try_recv(&mut self) -> Result<Result<Event, Error>, mpsc::RecvTimeoutError> {
+    pub fn try_recv(&self) -> Result<Result<Event, Error>, mpsc::RecvTimeoutError> {
         self.rx.recv_timeout(self.timeout)
     }
 
-    pub fn recv(&mut self) -> Event {
+    pub fn recv(&self) -> Event {
         self.recv_result()
             .unwrap_or_else(|e| panic!("Unexpected error from the watcher {:?}: {e:?}", self.kind))
     }
 
-    pub fn recv_result(&mut self) -> Result<Event, Error> {
+    pub fn recv_result(&self) -> Result<Event, Error> {
         self.try_recv().unwrap_or_else(|e| match e {
             mpsc::RecvTimeoutError::Timeout => panic!("Unable to wait the next event from the watcher {:?}: timeout", self.kind),
             mpsc::RecvTimeoutError::Disconnected => {
@@ -121,7 +118,7 @@ impl Receiver {
     /// Detects changes. It is useful for [`PollWatcher`]
     pub fn detect_changes(&self) {
         if let Some(detect_changes) = self.detect_changes.as_deref() {
-            detect_changes()
+            detect_changes();
         }
     }
 
@@ -150,14 +147,14 @@ impl Receiver {
     }
 
     /// Ensures, that the receiver part is empty. It doesn't wait anything, just check the channel
-    pub fn ensure_empty(&mut self) {
+    pub fn ensure_empty(&self) {
         if let Ok(event) = self.rx.try_recv() {
             panic!("Unexpected event was received: {event:#?}")
         }
     }
 
     /// Ensures, that the receiver part is empty. It waits for a short period and then checks the channel
-    pub fn ensure_empty_with_wait(&mut self) {
+    pub fn ensure_empty_with_wait(&self) {
         thread::sleep(Duration::from_millis(10));
         self.ensure_empty();
     }
@@ -176,7 +173,7 @@ impl Receiver {
             self.sleep_until(|| path.exists()),
             "the fs entry {path:?} has still not been exist after timeout {:?}",
             self.timeout
-        )
+        );
     }
 
     pub fn sleep_while_exists(&self, path: impl AsRef<Path>) {
@@ -185,7 +182,7 @@ impl Receiver {
             self.sleep_until(|| !path.exists()),
             "the fs entry {path:?} has been exist yet after timeout {:?}",
             self.timeout
-        )
+        );
     }
 }
 
@@ -230,7 +227,7 @@ impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
             timeout: Receiver::DEFAULT_TIMEOUT,
-            watcher_config: Default::default(),
+            watcher_config: Config::default(),
         }
     }
 }
@@ -254,7 +251,7 @@ impl<W: Watcher> TestWatcher<W> {
         let path = path.as_ref();
         self.watcher
             .watch(path, watch_mode)
-            .unwrap_or_else(|e| panic!("Unable to watch {:?}: {e:#?}", path))
+            .unwrap_or_else(|e| panic!("Unable to watch {path:?}: {e:#?}"));
     }
 
     pub fn get_watch_handles(&self) -> HashSet<PathBuf> {
@@ -290,7 +287,7 @@ pub fn sleep_until<F: FnMut() -> bool>(mut check: F, timeout: Duration) -> bool 
 }
 
 /// Creates a [`TestWatcher`] and connected [`Receiver`]
-pub fn channel_with_config<W: Watcher>(config: ChannelConfig) -> (TestWatcher<W>, Receiver) {
+pub fn channel_with_config<W: Watcher>(config: &ChannelConfig) -> (TestWatcher<W>, Receiver) {
     let (tx, rx) = mpsc::channel();
     let watcher = W::new(tx, config.watcher_config).expect("Unable to create a watcher");
     (
@@ -309,7 +306,7 @@ pub fn channel_with_config<W: Watcher>(config: ChannelConfig) -> (TestWatcher<W>
 
 /// Creates a [`TestWatcher`] and connected [`Receiver`]
 pub fn channel<W: Watcher>() -> (TestWatcher<W>, Receiver) {
-    channel_with_config(Default::default())
+    channel_with_config(&ChannelConfig::default())
 }
 
 /// Creates a [`TestWatcher`] for the [`RecommendedWatcher`] and connected [`Receiver`]
@@ -340,7 +337,7 @@ pub fn poll_watcher_channel() -> (TestWatcher<PollWatcher>, Receiver) {
         detect_changes: Some(Box::new(move || {
             sender
                 .send(())
-                .expect("PollWatcher receiver part was disconnected")
+                .expect("PollWatcher receiver part was disconnected");
         })),
         kind: watcher.kind,
     };
@@ -365,7 +362,7 @@ impl TestDir {
     }
 
     pub fn to_path_buf(&self) -> PathBuf {
-        self.path.to_path_buf()
+        self.path.clone()
     }
 
     pub fn parent_path_buf(&self) -> PathBuf {
@@ -410,11 +407,11 @@ impl Trackers {
             return false;
         };
 
-        if self.0.last() != Some(&tracker) {
+        if self.0.last() == Some(&tracker) {
+            false
+        } else {
             self.0.push(tracker);
             true
-        } else {
-            false
         }
     }
 }
@@ -472,7 +469,7 @@ mod expect {
         pub fn new(iter: impl IntoIterator<Item = ExpectedEvent>) -> Self {
             Self {
                 remain: iter.into_iter().collect(),
-                received: Default::default(),
+                received: Vec::default(),
                 unexpected_event_behaviour: UnexpectedEventBehaviour::Ignore,
                 multiple_event: None,
             }
@@ -496,8 +493,8 @@ mod expect {
             self.remain.is_all_optional()
         }
 
-        pub fn check(&mut self, event: Event) {
-            let expected = self.remain.expected(&event);
+        pub fn check(&mut self, event: &Event) {
+            let expected = self.remain.expected(event);
 
             if let Some(expected) = &expected {
                 self.multiple_event = expected.is_multiple().then(|| event.clone());
@@ -515,7 +512,7 @@ mod expect {
             if expected.is_none()
                 && self.unexpected_event_behaviour == UnexpectedEventBehaviour::Panic
             {
-                panic!("Unexpected event. State: {:#?}", self)
+                panic!("Unexpected event. State: {self:#?}")
             }
         }
 
@@ -630,7 +627,7 @@ mod expect {
 
     impl ExpectedPath for &PathBuf {
         fn add_to_event(self, event: &mut ExpectedEvent) {
-            event.push_path(self.to_path_buf());
+            event.push_path(self.clone());
         }
     }
 
@@ -672,6 +669,7 @@ mod expect {
     pub struct ExpectedEvent {
         kind: Option<ExpectedEventKind>,
         paths: Option<Vec<PathBuf>>,
+        #[expect(clippy::option_option)]
         tracker: Option<Option<usize>>,
         multiple: bool,
         optional: bool,

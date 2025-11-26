@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use std::{fs, thread, time::Duration};
 
 use notify::WatchMode;

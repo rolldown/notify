@@ -1,3 +1,6 @@
+#![allow(clippy::print_stdout)]
+#![cfg_attr(target_os = "windows", expect(clippy::unnecessary_wraps))]
+
 /// Example for watching kernel internal filesystems like `/sys` and `/proc`
 /// These can't be watched by the default backend or unconfigured pollwatcher
 /// This example can't be demonstrated under windows, it might be relevant for network shares
@@ -17,16 +20,17 @@ fn not_windows_main() -> notify::Result<()> {
             eprintln!(
                 "Must provide path to watch, default system path was not found (probably you're not running on Linux?)"
             );
+            #[expect(clippy::exit)]
             std::process::exit(1);
         }
         println!(
-            "Trying {:?}, use `ping localhost` to see changes!",
-            lo_stats
+            "Trying {}, use `ping localhost` to see changes!",
+            lo_stats.display()
         );
         paths.push(lo_stats);
     }
 
-    println!("watching {:?}...", paths);
+    println!("watching {paths:?}...");
     // configure pollwatcher backend
     let config = Config::default()
         .with_compare_contents(true) // crucial part for pseudo filesystems
@@ -43,8 +47,8 @@ fn not_windows_main() -> notify::Result<()> {
     // print all events, never returns
     for res in rx {
         match res {
-            Ok(event) => println!("changed: {:?}", event),
-            Err(e) => println!("watch error: {:?}", e),
+            Ok(event) => println!("changed: {event:?}"),
+            Err(e) => println!("watch error: {e:?}"),
         }
     }
 

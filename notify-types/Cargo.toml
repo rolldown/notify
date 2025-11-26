@@ -19,6 +19,9 @@ name  = "notify_types"
 [features]
 serialization-compat-6 = []
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }

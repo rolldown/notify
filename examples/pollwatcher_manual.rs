@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use notify::{Config, PollWatcher, WatchMode, Watcher};
 use std::path::Path;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -34,8 +36,8 @@ fn watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
     std::thread::spawn(move || {
         for res in rx {
             match res {
-                Ok(event) => println!("changed: {:?}", event),
-                Err(e) => println!("watch error: {:?}", e),
+                Ok(event) => println!("changed: {event:?}"),
+                Err(e) => println!("watch error: {e:?}"),
             }
         }
     });
