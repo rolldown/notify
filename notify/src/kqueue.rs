@@ -209,187 +209,192 @@ impl EventLoop {
                     ident: Ident::Filename(_, path),
                 } => {
                     let path = PathBuf::from(path);
-                    let event =
-                        match data {
-                            /*
-                            TODO: Differentiate folders and files
-                            kqueue doesn't tell us if this was a file or a dir, so we
-                            could only emulate this inotify behavior if we keep track of
-                            all files and directories internally and then perform a
-                            lookup.
-                            */
-                            kqueue::Vnode::Delete => {
-                                remove_watches.push(path.clone());
-                                if Self::is_watched_path(&self.watches, &path) {
-                                    let remove_event =
-                                        Event::new(EventKind::Remove(RemoveKind::Any))
-                                            .add_path(path.clone());
-                                    if let Ok(metadata) = path.metadata() {
-                                        // delete event also happens when this file is overwritten by a rename
-                                        // in that case, emit a create event for the new file
-                                        let is_dir = metadata.is_dir();
-                                        add_watches.push((path.clone(), is_dir));
-                                        tracing::trace!("overwrite detected: {}", path.display());
-                                        self.event_handler.handle_event(Ok(remove_event));
-                                        Some(Ok(Event::new(EventKind::Create(if is_dir {
+                    let mut evs = Vec::new();
+                    match data {
+                        /*
+                        TODO: Differentiate folders and files
+                        kqueue doesn't tell us if this was a file or a dir, so we
+                        could only emulate this inotify behavior if we keep track of
+                        all files and directories internally and then perform a
+                        lookup.
+                        */
+                        kqueue::Vnode::Delete => {
+                            remove_watches.push(path.clone());
+                            if Self::is_watched_path(&self.watches, &path) {
+                                let remove_event = Event::new(EventKind::Remove(RemoveKind::Any))
+                                    .add_path(path.clone());
+                                evs.push(remove_event);
+                                if let Ok(metadata) = path.metadata() {
+                                    // delete event also happens when this file is overwritten by a rename
+                                    // in that case, emit a create event for the new file
+                                    let is_dir = metadata.is_dir();
+                                    add_watches.push((path.clone(), is_dir));
+                                    tracing::trace!("overwrite detected: {}", path.display());
+                                    evs.push(
+                                        Event::new(EventKind::Create(if is_dir {
                                             CreateKind::Folder
                                         } else if metadata.is_file() {
                                             CreateKind::File
                                         } else {
                                             CreateKind::Other
                                         }))
-                                        .add_path(path)))
-                                    } else {
-                                        Some(Ok(remove_event))
-                                    }
-                                } else {
-                                    None
+                                        .add_path(path),
+                                    );
                                 }
                             }
+                        }
 
-                            // a write to a directory means that a new file was created in it, let's
-                            // figure out which file this was
-                            kqueue::Vnode::Write if path.is_dir() => {
-                                // find which file is new in the directory by comparing it with our
-                                // list of known watches
-                                std::fs::read_dir(&path)
-                                    .map(|dir| {
-                                        dir.filter_map(std::result::Result::ok)
-                                            .map(|f| f.path())
-                                            .find(|f| !self.watch_handles.contains(f))
-                                    })
-                                    .map(|file| {
-                                        tracing::trace!(
-                                            "new file detected: {:?}",
-                                            file.as_ref().map(|f| f.display())
-                                        );
-                                        if let Some(file) = file {
-                                            let metadata = file.metadata();
-                                            let is_dir =
-                                                metadata.as_ref().is_ok_and(|m| m.is_dir());
-                                            if Self::is_watched_path(&self.watches, &file) {
-                                                // watch this new file
-                                                add_watches.push((file.clone(), is_dir));
+                        // a write to a directory means that a new file was created in it, let's
+                        // figure out which file this was
+                        kqueue::Vnode::Write if path.is_dir() => {
+                            // find which file is new in the directory by comparing it with our
+                            // list of known watches
+                            match std::fs::read_dir(&path) {
+                                Ok(dir) => {
+                                    let file = dir
+                                        .filter_map(std::result::Result::ok)
+                                        .map(|f| f.path())
+                                        .find(|f| !self.watch_handles.contains(f));
+                                    tracing::trace!(
+                                        "new file detected: {:?}",
+                                        file.as_ref().map(|f| f.display())
+                                    );
+                                    if let Some(file) = file {
+                                        let metadata = file.metadata();
+                                        let is_dir = metadata.as_ref().is_ok_and(|m| m.is_dir());
+                                        if Self::is_watched_path(&self.watches, &file) {
+                                            // watch this new file
+                                            add_watches.push((file.clone(), is_dir));
 
-                                                Some(
-                                                    Event::new(EventKind::Create(if is_dir {
-                                                        CreateKind::Folder
-                                                    } else if metadata.is_ok_and(|m| m.is_file()) {
-                                                        CreateKind::File
-                                                    } else {
-                                                        CreateKind::Other
-                                                    }))
-                                                    .add_path(file),
-                                                )
-                                            } else {
-                                                None
-                                            }
-                                        } else if Self::is_watched_path(&self.watches, &path) {
-                                            Some(
-                                                Event::new(EventKind::Modify(ModifyKind::Data(
-                                                    DataChange::Any,
-                                                )))
-                                                .add_path(path),
-                                            )
-                                        } else {
-                                            None
+                                            evs.push(
+                                                Event::new(EventKind::Create(if is_dir {
+                                                    CreateKind::Folder
+                                                } else if metadata.is_ok_and(|m| m.is_file()) {
+                                                    CreateKind::File
+                                                } else {
+                                                    CreateKind::Other
+                                                }))
+                                                .add_path(file),
+                                            );
                                         }
-                                    })
-                                    .map_err(Into::into)
-                                    .transpose()
+                                    } else if Self::is_watched_path(&self.watches, &path) {
+                                        evs.push(
+                                            Event::new(EventKind::Modify(ModifyKind::Data(
+                                                DataChange::Any,
+                                            )))
+                                            .add_path(path),
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    self.event_handler.handle_event(Err(err.into()));
+                                }
                             }
+                        }
 
-                            // data was written to this file
-                            kqueue::Vnode::Write => Self::is_watched_path(&self.watches, &path)
-                                .then(|| {
-                                    Ok(Event::new(EventKind::Modify(ModifyKind::Data(
+                        // data was written to this file
+                        kqueue::Vnode::Write => {
+                            if Self::is_watched_path(&self.watches, &path) {
+                                evs.push(
+                                    Event::new(EventKind::Modify(ModifyKind::Data(
                                         DataChange::Any,
                                     )))
-                                    .add_path(path))
-                                }),
+                                    .add_path(path),
+                                );
+                            }
+                        }
 
-                            /*
-                            Extend and Truncate are just different names for the same
-                            operation, extend is only used on FreeBSD, truncate everywhere
-                            else
-                            */
-                            kqueue::Vnode::Extend | kqueue::Vnode::Truncate => {
-                                Self::is_watched_path(&self.watches, &path).then(|| {
-                                    Ok(Event::new(EventKind::Modify(ModifyKind::Data(
+                        /*
+                        Extend and Truncate are just different names for the same
+                        operation, extend is only used on FreeBSD, truncate everywhere
+                        else
+                        */
+                        kqueue::Vnode::Extend | kqueue::Vnode::Truncate => {
+                            if Self::is_watched_path(&self.watches, &path) {
+                                evs.push(
+                                    Event::new(EventKind::Modify(ModifyKind::Data(
                                         DataChange::Size,
                                     )))
-                                    .add_path(path))
-                                })
+                                    .add_path(path),
+                                );
                             }
+                        }
 
-                            /*
-                            this kevent has the same problem as the delete kevent. The
-                            only way i can think of providing "better" event with more
-                            information is to do the diff our self, while this maybe do
-                            able of delete. In this case it would somewhat expensive to
-                            keep track and compare ever peace of metadata for every file
-                            */
-                            kqueue::Vnode::Attrib => Self::is_watched_path(&self.watches, &path)
-                                .then(|| {
-                                    Ok(Event::new(EventKind::Modify(ModifyKind::Metadata(
+                        /*
+                        this kevent has the same problem as the delete kevent. The
+                        only way i can think of providing "better" event with more
+                        information is to do the diff our self, while this maybe do
+                        able of delete. In this case it would somewhat expensive to
+                        keep track and compare ever peace of metadata for every file
+                        */
+                        kqueue::Vnode::Attrib => {
+                            if Self::is_watched_path(&self.watches, &path) {
+                                evs.push(
+                                    Event::new(EventKind::Modify(ModifyKind::Metadata(
                                         MetadataKind::Any,
                                     )))
-                                    .add_path(path))
-                                }),
-
-                            /*
-                            The link count on a file changed => subdirectory created or
-                            delete.
-                            */
-                            kqueue::Vnode::Link => {
-                                // As we currently don't have a solution that would allow us
-                                // to only add/remove the new/delete directory and that dosn't include a
-                                // possible race condition. On possible solution would be to
-                                // create a `HashMap<PathBuf, Vec<PathBuf>>` which would
-                                // include every directory and this content add the time of
-                                // adding it to kqueue. While this should allow us to do the
-                                // diff and only add/remove the files necessary. This would
-                                // also introduce a race condition, where multiple files could
-                                // all ready be remove from the directory, and we could get out
-                                // of sync.
-                                // So for now, until we find a better solution, let remove and
-                                // readd the whole directory.
-                                // This is a expensive operation, as we recursive through all
-                                // subdirectories.
-                                remove_watches.push(path.clone());
-                                add_watches.push((path.clone(), true));
-                                Self::is_watched_path(&self.watches, &path).then(|| {
-                                    Ok(Event::new(EventKind::Modify(ModifyKind::Any))
-                                        .add_path(path))
-                                })
+                                    .add_path(path),
+                                );
                             }
+                        }
 
-                            // Kqueue not provide us with the information necessary to provide
-                            // the new file name to the event.
-                            kqueue::Vnode::Rename => {
-                                remove_watches.push(path.clone());
-                                Self::is_watched_path(&self.watches, &path).then(|| {
-                                    Ok(Event::new(EventKind::Modify(ModifyKind::Name(
+                        /*
+                        The link count on a file changed => subdirectory created or
+                        delete.
+                        */
+                        kqueue::Vnode::Link => {
+                            // As we currently don't have a solution that would allow us
+                            // to only add/remove the new/delete directory and that dosn't include a
+                            // possible race condition. On possible solution would be to
+                            // create a `HashMap<PathBuf, Vec<PathBuf>>` which would
+                            // include every directory and this content add the time of
+                            // adding it to kqueue. While this should allow us to do the
+                            // diff and only add/remove the files necessary. This would
+                            // also introduce a race condition, where multiple files could
+                            // all ready be remove from the directory, and we could get out
+                            // of sync.
+                            // So for now, until we find a better solution, let remove and
+                            // readd the whole directory.
+                            // This is a expensive operation, as we recursive through all
+                            // subdirectories.
+                            remove_watches.push(path.clone());
+                            add_watches.push((path.clone(), true));
+                            if Self::is_watched_path(&self.watches, &path) {
+                                evs.push(
+                                    Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path),
+                                );
+                            }
+                        }
+
+                        // Kqueue not provide us with the information necessary to provide
+                        // the new file name to the event.
+                        kqueue::Vnode::Rename => {
+                            remove_watches.push(path.clone());
+                            if Self::is_watched_path(&self.watches, &path) {
+                                evs.push(
+                                    Event::new(EventKind::Modify(ModifyKind::Name(
                                         RenameMode::Any,
                                     )))
-                                    .add_path(path))
-                                })
+                                    .add_path(path),
+                                );
                             }
+                        }
 
-                            // Access to the file was revoked via revoke(2) or the underlying file system was unmounted.
-                            kqueue::Vnode::Revoke => {
-                                remove_watches.push(path.clone());
-                                Self::is_watched_path(&self.watches, &path).then(|| {
-                                    Ok(Event::new(EventKind::Remove(RemoveKind::Any))
-                                        .add_path(path))
-                                })
+                        // Access to the file was revoked via revoke(2) or the underlying file system was unmounted.
+                        kqueue::Vnode::Revoke => {
+                            remove_watches.push(path.clone());
+                            if Self::is_watched_path(&self.watches, &path) {
+                                evs.push(
+                                    Event::new(EventKind::Remove(RemoveKind::Any)).add_path(path),
+                                );
                             }
+                        }
 
-                            // On different BSD variants, different extra events may be present
-                            _ => Some(Ok(Event::new(EventKind::Other))),
-                        };
-                    if let Some(event) = event {
-                        self.event_handler.handle_event(event);
+                        // On different BSD variants, different extra events may be present
+                        _ => evs.push(Event::new(EventKind::Other)),
+                    }
+                    for ev in evs {
+                        self.event_handler.handle_event(Ok(ev));
                     }
                 }
                 // as we don't add any other EVFILTER to kqueue we should never get here
