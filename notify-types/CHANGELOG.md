@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2](https://github.com/rolldown/notify/compare/rolldown-notify-types-v2.0.1...rolldown-notify-types-v2.0.2) - 2025-12-18
+
+### Other
+
+- enable more clippy rules ([#50](https://github.com/rolldown/notify/pull/50))
+
 ## [2.0.1](https://github.com/rolldown/notify/compare/rolldown-notify-types-v2.0.0...rolldown-notify-types-v2.0.1) - 2025-11-16
 
 ### Other
