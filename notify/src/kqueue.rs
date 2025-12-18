@@ -251,15 +251,15 @@ impl EventLoop {
                             // list of known watches
                             match std::fs::read_dir(&path) {
                                 Ok(dir) => {
-                                    let file = dir
+                                    let files = dir
                                         .filter_map(std::result::Result::ok)
                                         .map(|f| f.path())
-                                        .find(|f| !self.watch_handles.contains(f));
-                                    tracing::trace!(
-                                        "new file detected: {:?}",
-                                        file.as_ref().map(|f| f.display())
-                                    );
-                                    if let Some(file) = file {
+                                        .filter(|f| !self.watch_handles.contains(f));
+                                    let mut found_new_file = false;
+                                    for file in files {
+                                        found_new_file = true;
+                                        tracing::trace!("new file detected: {}", file.display());
+
                                         let metadata = file.metadata();
                                         let is_dir = metadata.as_ref().is_ok_and(|m| m.is_dir());
                                         if Self::is_watched_path(&self.watches, &file) {
@@ -276,8 +276,12 @@ impl EventLoop {
                                                 }))
                                                 .add_path(file),
                                             );
+                                            break;
                                         }
-                                    } else if Self::is_watched_path(&self.watches, &path) {
+                                    }
+                                    if !found_new_file
+                                        && Self::is_watched_path(&self.watches, &path)
+                                    {
                                         evs.push(
                                             Event::new(EventKind::Modify(ModifyKind::Data(
                                                 DataChange::Any,
