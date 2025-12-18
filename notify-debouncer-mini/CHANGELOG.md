@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.8.1...rolldown-notify-debouncer-mini-v0.8.2) - 2025-12-18
+
+### Other
+
+- enable more clippy rules ([#50](https://github.com/rolldown/notify/pull/50))
+
 ## [0.8.1](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.8.0...rolldown-notify-debouncer-mini-v0.8.1) - 2025-11-25
 
 ### Added

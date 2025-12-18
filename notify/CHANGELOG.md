@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.1](https://github.com/rolldown/notify/compare/rolldown-notify-v9.1.0...rolldown-notify-v9.1.1) - 2025-12-18
+
+### Fixed
+
+- emit multiple events if multiple files are created at once for kqueue watcher ([#54](https://github.com/rolldown/notify/pull/54))
+
+### Other
+
+- use vec to collect events to emit in kqueue watcher ([#53](https://github.com/rolldown/notify/pull/53))
+- enable more clippy rules ([#50](https://github.com/rolldown/notify/pull/50))
+
 ## [9.1.0](https://github.com/rolldown/notify/compare/rolldown-notify-v9.0.0...rolldown-notify-v9.1.0) - 2025-11-25
 
 ### Added

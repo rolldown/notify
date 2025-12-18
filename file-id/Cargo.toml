@@ -1,6 +1,6 @@
 [package]
 name = "rolldown-file-id"
-version = "0.2.4"
+version = "0.2.5"
 description = "Utility for reading inode numbers (Linux, MacOS) and file IDs (Windows)"
 documentation = "https://docs.rs/notify"
 readme = "README.md"

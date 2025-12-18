@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/rolldown/notify/compare/rolldown-file-id-v0.2.4...rolldown-file-id-v0.2.5) - 2025-12-18
+
+### Other
+
+- *(file-id)* reduce unsafe block range and add safety comment ([#52](https://github.com/rolldown/notify/pull/52))
+- enable more clippy rules ([#50](https://github.com/rolldown/notify/pull/50))
+
 ## [0.2.4](https://github.com/rolldown/notify/compare/rolldown-file-id-v0.2.3...rolldown-file-id-v0.2.4) - 2025-11-16
 
 ### Other
