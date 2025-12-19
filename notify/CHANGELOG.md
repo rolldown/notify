@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.0.0](https://github.com/rolldown/notify/compare/rolldown-notify-v9.1.1...rolldown-notify-v10.0.0) - 2025-12-19
+
+### Other
+
+- [**breaking**] remove implicit dependency named features ([#61](https://github.com/rolldown/notify/pull/61))
+- consolidate paths to parent path when threshold exceeded for fsevents watcher ([#60](https://github.com/rolldown/notify/pull/60))
+- only watch the top-most path for fsevents watcher ([#59](https://github.com/rolldown/notify/pull/59))
+- simplify path to CFString conversion ([#58](https://github.com/rolldown/notify/pull/58))
+- use `objc2-core-*` instead of `fsevent-sys` ([#57](https://github.com/rolldown/notify/pull/57))
+- rename `recursive_info` to `watches` in fsevents watcher ([#55](https://github.com/rolldown/notify/pull/55))
+
 ## [9.1.1](https://github.com/rolldown/notify/compare/rolldown-notify-v9.1.0...rolldown-notify-v9.1.1) - 2025-12-18
 
 ### Fixed
