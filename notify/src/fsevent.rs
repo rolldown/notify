@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -332,14 +332,7 @@ impl FsEventWatcher {
     }
 
     fn remove_path(&mut self, path: &Path) -> Result<()> {
-        let mut err: *mut cf::CFError = ptr::null_mut();
-        let Some(cf_path) = path_to_cfstring_ref(path, &mut err) else {
-            if let Some(err) = NonNull::new(err) {
-                // SAFETY: ???
-                let _ = unsafe { cf::CFRetained::from_raw(err) };
-            }
-            return Err(Error::watch_not_found().add_path(path.into()));
-        };
+        let cf_path = cf::CFString::from_str(&path.to_string_lossy());
 
         let mut to_remove = Vec::new();
         for (idx, item) in self.paths.iter().enumerate() {
@@ -382,16 +375,7 @@ impl FsEventWatcher {
             .canonicalize()
             .unwrap_or(path.to_path_buf());
 
-        let mut err: *mut cf::CFError = ptr::null_mut();
-        let Some(cf_path) = path_to_cfstring_ref(path, &mut err) else {
-            if let Some(err) = NonNull::new(err) {
-                // SAFETY: ???
-                let _ = unsafe { cf::CFRetained::from_raw(err) };
-            }
-            // Most likely the directory was deleted, or permissions changed,
-            // while the above code was running.
-            return Err(Error::path_not_found().add_path(path.into()));
-        };
+        let cf_path = cf::CFString::from_str(&path.to_string_lossy());
         self.paths.append(&cf_path);
 
         self.watches
@@ -632,49 +616,6 @@ impl Drop for FsEventWatcher {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-/// Grabbed from <https://docs.rs/fsevent-sys/4.1.0/src/fsevent_sys/core_foundation.rs.html#149-230>.
-///
-/// TODO: Could we simplify this?
-fn path_to_cfstring_ref(
-    source: &Path,
-    err_ptr: &mut *mut cf::CFError,
-) -> Option<cf::CFRetained<cf::CFString>> {
-    let url = cf::CFURL::from_file_path(source)?;
-    let mut placeholder = url.absolute_url()?;
-
-    let imaginary = cf::CFMutableArray::empty();
-    // SAFETY: `err_ptr` is a valid pointer
-    while !unsafe { placeholder.resource_is_reachable(err_ptr) } {
-        if let Some(child) = placeholder.last_path_component() {
-            imaginary.insert(0, &*child);
-        }
-        placeholder = cf::CFURL::new_copy_deleting_last_path_component(None, Some(&placeholder))?;
-    }
-
-    // SAFETY:
-    // - `allocator` can be None (https://developer.apple.com/documentation/corefoundation/cfurlcreatefilereferenceurl(_:_:_:) says it can be NULL)
-    // - `url` is not None
-    // - `err_ptr` is a valid pointer
-    let url = unsafe { cf::CFURL::new_file_reference_url(None, Some(&placeholder), err_ptr) }?;
-
-    // SAFETY:
-    // - `allocator` can be None (https://developer.apple.com/documentation/corefoundation/cfurlcreatefilepathurl(_:_:_:) says it can be NULL)
-    // - `url` is not None
-    // - `err_ptr` is a valid pointer
-    let mut placeholder = unsafe { cf::CFURL::new_file_path_url(None, Some(&url), err_ptr) }?;
-
-    for component in imaginary {
-        placeholder = cf::CFURL::new_copy_appending_path_component(
-            None,
-            Some(&placeholder),
-            Some(&component),
-            false,
-        )?;
-    }
-
-    placeholder.file_system_path(cf::CFURLPathStyle::CFURLPOSIXPathStyle)
 }
 
 #[cfg(test)]
