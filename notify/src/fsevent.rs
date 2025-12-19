@@ -66,7 +66,7 @@ pub struct FsEventWatcher {
     flags: fs::FSEventStreamCreateFlags,
     event_handler: Arc<Mutex<dyn EventHandler>>,
     runloop: Option<(cf::CFRunLoopRef, thread::JoinHandle<()>)>,
-    recursive_info: HashMap<PathBuf, bool>,
+    watches: HashMap<PathBuf, bool>,
 }
 
 impl fmt::Debug for FsEventWatcher {
@@ -78,7 +78,7 @@ impl fmt::Debug for FsEventWatcher {
             .field("flags", &self.flags)
             .field("event_handler", &Arc::as_ptr(&self.event_handler))
             .field("runloop", &self.runloop)
-            .field("recursive_info", &self.recursive_info)
+            .field("watches", &self.watches)
             .finish()
     }
 }
@@ -303,7 +303,7 @@ impl FsEventWatcher {
             flags: fs::kFSEventStreamCreateFlagFileEvents | fs::kFSEventStreamCreateFlagNoDefer,
             event_handler,
             runloop: None,
-            recursive_info: HashMap::new(),
+            watches: HashMap::new(),
         }
     }
 
@@ -380,7 +380,7 @@ impl FsEventWatcher {
         } else {
             path.to_owned()
         };
-        match self.recursive_info.remove(&p) {
+        match self.watches.remove(&p) {
             Some(_) => Ok(()),
             None => Err(Error::watch_not_found()),
         }
@@ -410,7 +410,7 @@ impl FsEventWatcher {
             cf::CFArrayAppendValue(self.paths, cf_path);
             cf::CFRelease(cf_path);
         }
-        self.recursive_info
+        self.watches
             .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
         Ok(())
     }
@@ -426,7 +426,7 @@ impl FsEventWatcher {
         // `FSEventStreamRelease`.
         let context = Box::into_raw(Box::new(StreamContextInfo {
             event_handler: Arc::clone(&self.event_handler),
-            recursive_info: self.recursive_info.clone(),
+            recursive_info: self.watches.clone(),
         }));
 
         let stream_context = fs::FSEventStreamContext {
