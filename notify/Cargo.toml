@@ -23,8 +23,8 @@ name  = "notify"
 [features]
 default = ["macos_fsevent"]
 serde = ["rolldown-notify-types/serde"]
-macos_kqueue = ["kqueue", "mio"]
-macos_fsevent = ["objc2-core-foundation", "objc2-core-services"]
+macos_kqueue = ["dep:kqueue", "dep:mio"]
+macos_fsevent = ["dep:objc2-core-foundation", "dep:objc2-core-services"]
 serialization-compat-6 = ["rolldown-notify-types/serialization-compat-6"]
 
 [lints]
