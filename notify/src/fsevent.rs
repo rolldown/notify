@@ -14,13 +14,15 @@
 
 #![allow(non_upper_case_globals, dead_code)]
 
+use crate::consolidating_path_trie::ConsolidatingPathTrie;
 use crate::{Config, Error, EventHandler, PathsMut, Result, Sender, WatchMode, Watcher, unbounded};
 use crate::{TargetMode, event::*};
 use objc2_core_foundation as cf;
 use objc2_core_services as fs;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::fmt;
+use std::hash::RandomState;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
@@ -332,26 +334,6 @@ impl FsEventWatcher {
     }
 
     fn remove_path(&mut self, path: &Path) -> Result<()> {
-        let cf_path = cf::CFString::from_str(&path.to_string_lossy());
-
-        let mut to_remove = Vec::new();
-        for (idx, item) in self.paths.iter().enumerate() {
-            if item.compare(
-                Some(&cf_path),
-                cf::CFStringCompareFlags::CompareCaseInsensitive,
-            ) == cf::CFComparisonResult::CompareEqualTo
-            {
-                to_remove.push(cf::CFIndex::try_from(idx).unwrap());
-            }
-        }
-
-        for idx in to_remove.iter().rev() {
-            // SAFETY: `the_array` is not `None` and the generic is correct, `idx` is in-bounds
-            unsafe {
-                cf::CFMutableArray::remove_value_at_index(Some(self.paths.as_opaque()), *idx);
-            };
-        }
-
         let p = if let Ok(canonicalized_path) = path.canonicalize() {
             canonicalized_path
         } else {
@@ -375,18 +357,58 @@ impl FsEventWatcher {
             .canonicalize()
             .unwrap_or(path.to_path_buf());
 
-        let cf_path = cf::CFString::from_str(&path.to_string_lossy());
-        self.paths.append(&cf_path);
-
         self.watches
             .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
         Ok(())
     }
 
+    fn update_paths_based_on_watches(&mut self) {
+        let paths_to_watch = {
+            let mut trie = ConsolidatingPathTrie::new();
+            for path in self.watches.keys() {
+                trie.insert(path.clone());
+            }
+            trie.values()
+        };
+        tracing::debug!("Watching the following paths: {paths_to_watch:?}");
+        let paths_to_watch_set = paths_to_watch
+            .iter()
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .collect::<HashSet<_>>();
+        let mut already_included_paths =
+            HashSet::<String, RandomState>::with_capacity(self.paths.len());
+
+        // remove no longer watched paths
+        let mut to_remove = Vec::new();
+        for (idx, item) in self.paths.iter().enumerate() {
+            if paths_to_watch_set.contains(&item.to_string()) {
+                already_included_paths.insert(item.to_string());
+            } else {
+                to_remove.push(cf::CFIndex::try_from(idx).unwrap());
+            }
+        }
+        for idx in to_remove.iter().rev() {
+            // SAFETY: `the_array` is not `None` and the generic is correct, `idx` is in-bounds
+            unsafe {
+                cf::CFMutableArray::remove_value_at_index(Some(self.paths.as_opaque()), *idx);
+            };
+        }
+
+        // add new paths
+        for path in paths_to_watch {
+            if !already_included_paths.contains(&path.to_string_lossy().to_lowercase()) {
+                self.paths
+                    .append(&cf::CFString::from_str(&path.to_string_lossy()));
+            }
+        }
+    }
+
     fn run(&mut self) -> Result<()> {
-        if self.paths.is_empty() {
+        if self.watches.is_empty() {
             return Ok(());
         }
+
+        self.update_paths_based_on_watches();
 
         // We need to associate the stream context with our callback in order to propagate events
         // to the rest of the system. This will be owned by the stream, and will be freed when the
