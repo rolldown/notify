@@ -23,8 +23,16 @@ impl<T> PathTrieNode<T> {
             .binary_search_by(|(k, _)| k.as_os_str().cmp(key))
     }
 
+    pub(crate) fn children_len(&self) -> usize {
+        self.children.len()
+    }
+
     pub fn remove_children(&mut self) {
         self.children.clear();
+    }
+
+    pub fn set_value(&mut self, value: T) {
+        self.value = Some(value);
     }
 
     pub fn descendants(&self) -> impl Iterator<Item = (PathBuf, &T)> {
@@ -63,6 +71,19 @@ impl<T> PathTrie<T> {
         }
         current.value = Some(value);
         current
+    }
+
+    /// Get the node associated with the given path.
+    /// It may not have a value.
+    pub fn get_node_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut PathTrieNode<T>> {
+        let path = path.as_ref();
+        let mut current = &mut self.root;
+        for component in path.components() {
+            let key = component.as_os_str();
+            let idx = current.get_child_index(key).ok()?;
+            current = &mut current.children[idx].1;
+        }
+        Some(current)
     }
 
     /// Get the node associated with the given path.
@@ -155,6 +176,8 @@ pub struct ConsolidatingPathTrie {
 }
 
 impl ConsolidatingPathTrie {
+    const CHILDREN_CONSOLIDATION_THRESHOLD: usize = 10;
+
     pub fn new() -> Self {
         Self {
             trie: PathTrie::new(),
@@ -168,6 +191,17 @@ impl ConsolidatingPathTrie {
         }
         let inserted = self.trie.insert(path, ());
         inserted.remove_children();
+
+        for ancestor_path in path.ancestors().skip(1) {
+            if let Some(parent_node) = self.trie.get_node_mut(ancestor_path)
+                && parent_node.children_len() >= Self::CHILDREN_CONSOLIDATION_THRESHOLD
+            {
+                parent_node.remove_children();
+                parent_node.set_value(());
+            } else {
+                break;
+            }
+        }
     }
 
     pub fn values(&self) -> Vec<PathBuf> {
@@ -235,5 +269,44 @@ mod tests {
         ct.insert(PathBuf::from("/a/b/c"));
         ct.insert(PathBuf::from("/a/b"));
         assert_eq!(ct.values(), vec![PathBuf::from("/a/b")]);
+    }
+
+    #[test]
+    fn consolidate_to_single_parent() {
+        let mut cr = ConsolidatingPathTrie::new();
+        for i in 1..=ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
+            cr.insert(PathBuf::from(format!("/a/b/c{i}")));
+        }
+        assert_eq!(cr.values(), vec![PathBuf::from("/a/b")]);
+    }
+
+    #[test]
+    fn consolidate_to_single_parent_nested1() {
+        let mut cr = ConsolidatingPathTrie::new();
+        for i in 1..ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
+            cr.insert(PathBuf::from(format!("/a/b/c{i}")));
+        }
+        for i in 1..=ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
+            cr.insert(PathBuf::from(format!("/a/b/cc/d{i}")));
+        }
+        assert_eq!(cr.values(), vec![PathBuf::from("/a/b")]);
+    }
+
+    #[test]
+    fn consolidate_to_single_parent_nested2() {
+        let mut cr = ConsolidatingPathTrie::new();
+        cr.insert(PathBuf::from("/a/b/c1"));
+        cr.insert(PathBuf::from("/a/b/c2"));
+        for i in 1..=ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
+            cr.insert(PathBuf::from(format!("/a/b/c3/d{i}")));
+        }
+        assert_eq!(
+            cr.values(),
+            vec![
+                PathBuf::from("/a/b/c1"),
+                PathBuf::from("/a/b/c2"),
+                PathBuf::from("/a/b/c3")
+            ]
+        );
     }
 }
