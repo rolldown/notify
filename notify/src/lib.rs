@@ -234,6 +234,8 @@ pub mod poll;
 
 mod bimap;
 mod config;
+#[cfg(all(target_os = "macos", not(feature = "macos_kqueue")))]
+mod consolidating_path_trie;
 mod error;
 
 #[cfg(test)]
