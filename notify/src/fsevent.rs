@@ -364,7 +364,7 @@ impl FsEventWatcher {
 
     fn update_paths_based_on_watches(&mut self) {
         let paths_to_watch = {
-            let mut trie = ConsolidatingPathTrie::new();
+            let mut trie = ConsolidatingPathTrie::new(true);
             for path in self.watches.keys() {
                 trie.insert(path.clone());
             }

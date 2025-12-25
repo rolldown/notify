@@ -86,7 +86,7 @@ pub enum TargetMode {
     /// If the underlying physical entity (inode/File ID) is replaced
     /// (e.g., by a move/rename operation), the watch stops monitoring.
     ///
-    /// TODO: fsevents backend and Windows backend does not unwatch on physical entity change yet. <https://github.com/rolldown/notify/issues/33>
+    /// TODO: fsevents backend and Windows backend and polling backend does not unwatch on physical entity change yet. <https://github.com/rolldown/notify/issues/33>
     NoTrack,
 }
 
