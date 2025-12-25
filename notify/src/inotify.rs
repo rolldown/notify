@@ -89,15 +89,13 @@ fn add_watch_by_event(
         return;
     }
 
-    let mut current = parent;
-    while let Some(parent) = current.parent() {
-        if let Some(watch_mode) = watches.get(parent)
+    for ancestor in parent.ancestors().skip(1) {
+        if let Some(watch_mode) = watches.get(ancestor)
             && watch_mode.recursive_mode == RecursiveMode::Recursive
         {
             add_watches.push((path.to_owned(), true, is_file_without_hardlinks));
             return;
         }
-        current = parent;
     }
 }
 
@@ -256,16 +254,11 @@ impl EventLoop {
             return true;
         }
 
-        let mut current = parent;
-        while let Some(parent) = current.parent() {
-            if let Some(watch_mode) = watches.get(parent)
-                && watch_mode.recursive_mode == RecursiveMode::Recursive
-            {
-                return true;
-            }
-            current = parent;
-        }
-        false
+        parent.ancestors().skip(1).any(|ancestor| {
+            watches
+                .get(ancestor)
+                .is_some_and(|watch_mode| watch_mode.recursive_mode == RecursiveMode::Recursive)
+        })
     }
 
     #[expect(clippy::too_many_lines)]
