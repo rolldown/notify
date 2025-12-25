@@ -79,7 +79,7 @@ mod data {
         cell::RefCell,
         collections::{HashMap, hash_map::RandomState},
         fmt::{self, Debug},
-        fs::{File, Metadata},
+        fs::{File, FileType, Metadata},
         hash::{BuildHasher, Hasher},
         io::{self, Read},
         path::{Path, PathBuf},
@@ -403,6 +403,8 @@ mod data {
         /// File updated time.
         mtime: i64,
 
+        file_type: FileType,
+
         /// Content's hash value, only available if user request compare file
         /// contents and read successful.
         hash: Option<u64>,
@@ -418,6 +420,7 @@ mod data {
 
             PathData {
                 mtime: metadata.modified().map_or(0, system_time_to_seconds),
+                file_type: metadata.file_type(),
                 hash: data_builder
                     .build_hasher
                     .as_ref()
@@ -450,6 +453,30 @@ mod data {
             Ok(hasher.finish())
         }
 
+        /// Get `CreateKind` by file type.
+        fn get_create_kind(&self) -> CreateKind {
+            #[expect(clippy::filetype_is_file)]
+            if self.file_type.is_dir() {
+                CreateKind::Folder
+            } else if self.file_type.is_file() {
+                CreateKind::File
+            } else {
+                CreateKind::Any
+            }
+        }
+
+        /// Get `RemoveKind` by file type.
+        fn get_remove_kind(&self) -> RemoveKind {
+            #[expect(clippy::filetype_is_file)]
+            if self.file_type.is_dir() {
+                RemoveKind::Folder
+            } else if self.file_type.is_file() {
+                RemoveKind::File
+            } else {
+                RemoveKind::Any
+            }
+        }
+
         /// Get [`Event`] by compare two optional [`PathData`].
         fn compare_to_event<P>(
             path: P,
@@ -471,8 +498,8 @@ mod data {
                         None
                     }
                 }
-                (None, Some(_new)) => Some(EventKind::Create(CreateKind::Any)),
-                (Some(_old), None) => Some(EventKind::Remove(RemoveKind::Any)),
+                (None, Some(new)) => Some(EventKind::Create(new.get_create_kind())),
+                (Some(old), None) => Some(EventKind::Remove(old.get_remove_kind())),
                 (None, None) => None,
             }
             .map(|event_kind| Event::new(event_kind).add_path(path.into()))
@@ -834,7 +861,7 @@ mod tests {
         std::fs::File::create_new(&path).expect("Unable to create");
 
         rx.sleep_until_exists(&path);
-        rx.wait_ordered_exact([expected(&path).create_any()]);
+        rx.wait_ordered_exact([expected(&path).create_file()]);
     }
 
     #[test]
@@ -850,7 +877,7 @@ mod tests {
         std::fs::File::create_new(&path).expect("create");
 
         rx.sleep_until_exists(&path);
-        rx.wait_ordered_exact([expected(&path).create_any()]);
+        rx.wait_ordered_exact([expected(&path).create_file()]);
     }
 
     #[test]
@@ -889,7 +916,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).expect("create");
         std::fs::File::create_new(&path).expect("create");
 
-        rx.wait_ordered_exact([expected(&path).create_any()]);
+        rx.wait_ordered_exact([expected(&path).create_file()]);
     }
 
     #[test]
@@ -903,7 +930,7 @@ mod tests {
         std::fs::create_dir(&path).expect("Unable to create");
 
         rx.sleep_until_exists(&path);
-        rx.wait_ordered_exact([expected(&path).create_any()]);
+        rx.wait_ordered_exact([expected(&path).create_folder()]);
     }
 
     #[test]
@@ -940,8 +967,8 @@ mod tests {
         rx.sleep_until_exists(&new_path);
 
         rx.wait_unordered_exact([
-            expected(&path).remove_any(),
-            expected(&new_path).create_any(),
+            expected(&path).remove_file(),
+            expected(&new_path).create_file(),
         ]);
     }
 
@@ -962,7 +989,7 @@ mod tests {
         rx.sleep_while_exists(&path);
         rx.sleep_until_exists(&new_path);
 
-        rx.wait_unordered_exact([expected(&path).remove_any()])
+        rx.wait_unordered_exact([expected(&path).remove_file()])
             .ensure_no_tail();
 
         std::fs::rename(&new_path, &path).expect("rename2");
@@ -970,7 +997,7 @@ mod tests {
         rx.sleep_while_exists(&new_path);
         rx.sleep_until_exists(&path);
 
-        rx.wait_unordered_exact([expected(&path).create_any()])
+        rx.wait_unordered_exact([expected(&path).create_file()])
             .ensure_no_tail();
     }
 
@@ -998,7 +1025,7 @@ mod tests {
         rx.sleep_while_exists(&path);
         rx.sleep_until_exists(&new_path);
 
-        rx.wait_unordered_exact([expected(&path).remove_any()])
+        rx.wait_unordered_exact([expected(&path).remove_file()])
             .ensure_no_tail();
 
         let result = watcher.watcher.watch(
@@ -1031,7 +1058,7 @@ mod tests {
         rx.sleep_while_exists(&path);
         rx.wait_ordered_exact([
             expected(&path).modify_data_any().optional(),
-            expected(&path).remove_any(),
+            expected(&path).remove_file(),
         ]);
     }
 
@@ -1050,13 +1077,13 @@ mod tests {
         rx.sleep_while_exists(&path);
         rx.wait_ordered_exact([
             expected(&path).modify_data_any().optional(),
-            expected(&path).remove_any(),
+            expected(&path).remove_file(),
         ]);
 
         std::fs::write(&path, "").expect("write");
 
         rx.sleep_until_exists(&path);
-        rx.wait_ordered_exact([expected(&path).create_any()]);
+        rx.wait_ordered_exact([expected(&path).create_file()]);
     }
 
     #[test]
@@ -1080,7 +1107,7 @@ mod tests {
         rx.sleep_while_exists(&path);
         rx.wait_ordered_exact([
             expected(&path).modify_data_any().optional(),
-            expected(&path).remove_any(),
+            expected(&path).remove_file(),
         ]);
 
         std::fs::write(&path, "").expect("write");
