@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.1.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.0.0...rolldown-notify-v10.1.0) - 2025-12-25
+
+### Added
+
+- report file types for create / remove events by polling backend ([#66](https://github.com/rolldown/notify/pull/66))
+- align poll watcher behavior with other backends ([#63](https://github.com/rolldown/notify/pull/63))
+
+### Other
+
+- use `Path::ancestors` ([#64](https://github.com/rolldown/notify/pull/64))
+
 ## [10.0.0](https://github.com/rolldown/notify/compare/rolldown-notify-v9.1.1...rolldown-notify-v10.0.0) - 2025-12-19
 
 ### Other
