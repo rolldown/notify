@@ -172,14 +172,17 @@ impl<'a, T> PathTrieIter<'a, T> {
 }
 
 pub struct ConsolidatingPathTrie {
+    children_consolidation: bool,
+
     trie: PathTrie<()>,
 }
 
 impl ConsolidatingPathTrie {
     const CHILDREN_CONSOLIDATION_THRESHOLD: usize = 10;
 
-    pub fn new() -> Self {
+    pub fn new(children_consolidation: bool) -> Self {
         Self {
+            children_consolidation,
             trie: PathTrie::new(),
         }
     }
@@ -192,14 +195,16 @@ impl ConsolidatingPathTrie {
         let inserted = self.trie.insert(path, ());
         inserted.remove_children();
 
-        for ancestor_path in path.ancestors().skip(1) {
-            if let Some(parent_node) = self.trie.get_node_mut(ancestor_path)
-                && parent_node.children_len() >= Self::CHILDREN_CONSOLIDATION_THRESHOLD
-            {
-                parent_node.remove_children();
-                parent_node.set_value(());
-            } else {
-                break;
+        if self.children_consolidation {
+            for ancestor_path in path.ancestors().skip(1) {
+                if let Some(parent_node) = self.trie.get_node_mut(ancestor_path)
+                    && parent_node.children_len() >= Self::CHILDREN_CONSOLIDATION_THRESHOLD
+                {
+                    parent_node.remove_children();
+                    parent_node.set_value(());
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -235,54 +240,68 @@ mod tests {
 
     #[test]
     fn consolidate_no_siblings() {
-        let mut ct = ConsolidatingPathTrie::new();
-        ct.insert(PathBuf::from("/a/b"));
-        ct.insert(PathBuf::from("/a/c"));
-        assert_eq!(
-            ct.values(),
-            vec![PathBuf::from("/a/b"), PathBuf::from("/a/c")]
-        );
+        for children_consolidation in [true, false] {
+            let mut ct = ConsolidatingPathTrie::new(children_consolidation);
+            ct.insert(PathBuf::from("/a/b"));
+            ct.insert(PathBuf::from("/a/c"));
+            assert_eq!(
+                ct.values(),
+                vec![PathBuf::from("/a/b"), PathBuf::from("/a/c")]
+            );
+        }
     }
 
     #[test]
     fn consolidate_no_siblings2() {
-        let mut ct = ConsolidatingPathTrie::new();
-        ct.insert(PathBuf::from("/a/b1"));
-        ct.insert(PathBuf::from("/a/b2"));
-        assert_eq!(
-            ct.values(),
-            vec![PathBuf::from("/a/b1"), PathBuf::from("/a/b2")]
-        );
+        for children_consolidation in [true, false] {
+            let mut ct = ConsolidatingPathTrie::new(children_consolidation);
+            ct.insert(PathBuf::from("/a/b1"));
+            ct.insert(PathBuf::from("/a/b2"));
+            assert_eq!(
+                ct.values(),
+                vec![PathBuf::from("/a/b1"), PathBuf::from("/a/b2")]
+            );
+        }
     }
 
     #[test]
     fn consolidate_children() {
-        let mut ct = ConsolidatingPathTrie::new();
-        ct.insert(PathBuf::from("/a/b"));
-        ct.insert(PathBuf::from("/a/b/c"));
-        assert_eq!(ct.values(), vec![PathBuf::from("/a/b")]);
+        for children_consolidation in [true, false] {
+            let mut ct = ConsolidatingPathTrie::new(children_consolidation);
+            ct.insert(PathBuf::from("/a/b"));
+            ct.insert(PathBuf::from("/a/b/c"));
+            assert_eq!(ct.values(), vec![PathBuf::from("/a/b")]);
+        }
     }
 
     #[test]
     fn consolidate_parent() {
-        let mut ct = ConsolidatingPathTrie::new();
-        ct.insert(PathBuf::from("/a/b/c"));
-        ct.insert(PathBuf::from("/a/b"));
-        assert_eq!(ct.values(), vec![PathBuf::from("/a/b")]);
+        for children_consolidation in [true, false] {
+            let mut ct = ConsolidatingPathTrie::new(children_consolidation);
+            ct.insert(PathBuf::from("/a/b/c"));
+            ct.insert(PathBuf::from("/a/b"));
+            assert_eq!(ct.values(), vec![PathBuf::from("/a/b")]);
+        }
     }
 
     #[test]
     fn consolidate_to_single_parent() {
-        let mut cr = ConsolidatingPathTrie::new();
+        let mut cr = ConsolidatingPathTrie::new(true);
         for i in 1..=ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
             cr.insert(PathBuf::from(format!("/a/b/c{i}")));
         }
         assert_eq!(cr.values(), vec![PathBuf::from("/a/b")]);
+
+        let mut cr = ConsolidatingPathTrie::new(false);
+        for i in 1..=ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
+            cr.insert(PathBuf::from(format!("/a/b/c{i}")));
+        }
+        assert!(cr.values().len() > 1);
     }
 
     #[test]
     fn consolidate_to_single_parent_nested1() {
-        let mut cr = ConsolidatingPathTrie::new();
+        let mut cr = ConsolidatingPathTrie::new(true);
         for i in 1..ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
             cr.insert(PathBuf::from(format!("/a/b/c{i}")));
         }
@@ -294,7 +313,7 @@ mod tests {
 
     #[test]
     fn consolidate_to_single_parent_nested2() {
-        let mut cr = ConsolidatingPathTrie::new();
+        let mut cr = ConsolidatingPathTrie::new(true);
         cr.insert(PathBuf::from("/a/b/c1"));
         cr.insert(PathBuf::from("/a/b/c2"));
         for i in 1..=ConsolidatingPathTrie::CHILDREN_CONSOLIDATION_THRESHOLD {
