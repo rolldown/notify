@@ -1153,6 +1153,7 @@ mod tests {
         std::fs::write(&overwritten_file, "123").expect("write1");
 
         rx.sleep_until_parent_contains(&overwritten_file);
+        rx.sleep_until_exists(&overwritten_file);
 
         watcher.watch_nonrecursively(&tmpdir);
         watcher.watcher.wait_next_scan().expect("wait next scan");
