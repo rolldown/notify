@@ -52,7 +52,7 @@ mio = { workspace = true, optional = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Threading", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_WindowsProgramming", "Win32_System_IO"] }
 
-[target.'cfg(any(target_os="freebsd", target_os="openbsd", target_os = "netbsd", target_os = "dragonflybsd", target_os = "ios"))'.dependencies]
+[target.'cfg(any(target_os="freebsd", target_os="openbsd", target_os = "netbsd", target_os = "dragonfly", target_os = "ios"))'.dependencies]
 kqueue.workspace = true
 mio.workspace = true
 
