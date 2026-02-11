@@ -437,6 +437,19 @@ impl EventLoop {
                                     &mut remove_watches,
                                 );
                             }
+                            if event.mask.contains(EventMask::UNMOUNT) {
+                                if Self::is_watched_path(&self.watches, &path) {
+                                    evs.push(
+                                        Event::new(EventKind::Remove(RemoveKind::Other))
+                                            .add_path(path.clone()),
+                                    );
+                                }
+                                remove_watch_by_event(
+                                    &path,
+                                    &self.watch_handles,
+                                    &mut remove_watches,
+                                );
+                            }
                             if event.mask.contains(EventMask::MODIFY)
                                 && Self::is_watched_path(&self.watches, &path)
                             {
