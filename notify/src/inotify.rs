@@ -265,6 +265,7 @@ impl EventLoop {
     fn handle_inotify(&mut self) {
         let mut add_watches = Vec::new();
         let mut remove_watches = Vec::new();
+        let mut remove_watches_no_syscall = Vec::new();
 
         if let Some(ref mut inotify) = self.inotify {
             let mut buffer = [0; 1024];
@@ -444,10 +445,13 @@ impl EventLoop {
                                             .add_path(path.clone()),
                                     );
                                 }
+                                // The kernel has already removed this watch descriptor and will
+                                // emit IGNORED; clean up internal state without inotify_rm_watch.
+                                // ref. https://www.man7.org/linux/man-pages/man7/inotify.7.html
                                 remove_watch_by_event(
                                     &path,
                                     &self.watch_handles,
-                                    &mut remove_watches,
+                                    &mut remove_watches_no_syscall,
                                 );
                             }
                             if event.mask.contains(EventMask::MODIFY)
@@ -528,6 +532,17 @@ impl EventLoop {
             "processing inotify watch changes"
         );
 
+        for path in remove_watches_no_syscall {
+            if self
+                .watches
+                .get(&path)
+                .is_some_and(|watch_mode| watch_mode.target_mode == TargetMode::NoTrack)
+            {
+                self.watches.remove(&path);
+            }
+            self.remove_maybe_recursive_watch(&path, true, true).ok();
+        }
+
         for path in remove_watches {
             if self
                 .watches
@@ -536,7 +551,7 @@ impl EventLoop {
             {
                 self.watches.remove(&path);
             }
-            self.remove_maybe_recursive_watch(&path, true).ok();
+            self.remove_maybe_recursive_watch(&path, true, false).ok();
         }
 
         for (path, is_recursive, is_file_without_hardlinks) in add_watches {
@@ -725,14 +740,23 @@ impl EventLoop {
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found().add_path(path)),
             Some(watch_mode) => {
-                self.remove_maybe_recursive_watch(&path, watch_mode.recursive_mode.is_recursive())?;
+                self.remove_maybe_recursive_watch(
+                    &path,
+                    watch_mode.recursive_mode.is_recursive(),
+                    false,
+                )?;
             }
         }
         Ok(())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_maybe_recursive_watch(&mut self, path: &Path, is_recursive: bool) -> Result<()> {
+    fn remove_maybe_recursive_watch(
+        &mut self,
+        path: &Path,
+        is_recursive: bool,
+        without_os_call: bool,
+    ) -> Result<()> {
         let Some(ref mut inotify) = self.inotify else {
             return Ok(());
         };
@@ -741,18 +765,22 @@ impl EventLoop {
         if let Some((handle, _)) = self.watch_handles.remove_by_right(path) {
             tracing::trace!("removing inotify watch: {}", path.display());
 
-            inotify_watches
-                .remove(handle)
-                .map_err(|e| Error::io(e).add_path(path.to_path_buf()))?;
+            if !without_os_call {
+                inotify_watches
+                    .remove(handle)
+                    .map_err(|e| Error::io(e).add_path(path.to_path_buf()))?;
+            }
         }
 
         if is_recursive {
             let mut remove_list = Vec::new();
             for (w, p, _) in &self.watch_handles {
                 if p.starts_with(path) {
-                    inotify_watches
-                        .remove(w.clone())
-                        .map_err(|e| Error::io(e).add_path(p.into()))?;
+                    if !without_os_call {
+                        inotify_watches
+                            .remove(w.clone())
+                            .map_err(|e| Error::io(e).add_path(p.into()))?;
+                    }
                     remove_list.push(w.clone());
                 }
             }
