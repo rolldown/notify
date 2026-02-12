@@ -344,6 +344,24 @@ pub trait PathsMut {
 /// `Watcher` is implemented per platform using the best implementation available on that platform.
 /// In addition to such event driven implementations, a polling implementation is also provided
 /// that should work on any platform.
+///
+/// # Creating a watcher
+///
+/// Because `Watcher` is a trait, Rust usually can't infer the concrete watcher type when calling
+/// `Watcher::new(...)` directly. Prefer [`recommended_watcher`] / [`RecommendedWatcher`] (or a
+/// specific backend like [`PollWatcher`]) when constructing a watcher.
+///
+/// ```no_run
+/// use notify::{Event, Result, WatchMode, Watcher};
+/// use std::{path::Path, sync::mpsc};
+///
+/// fn main() -> Result<()> {
+///     let (tx, _rx) = mpsc::channel::<Result<Event>>();
+///     let mut watcher = notify::recommended_watcher(tx)?;
+///     watcher.watch(Path::new("."), WatchMode::recursive())?;
+///     Ok(())
+/// }
+/// ```
 pub trait Watcher {
     /// Create a new watcher with an initial Config.
     fn new<F: EventHandler>(event_handler: F, config: config::Config) -> Result<Self>
@@ -462,6 +480,20 @@ pub type RecommendedWatcher = KqueueWatcher;
 pub type RecommendedWatcher = PollWatcher;
 
 /// Convenience method for creating the [`RecommendedWatcher`] for the current platform.
+///
+/// This is often the most ergonomic way to construct a watcher, because calling `Watcher::new(...)`
+/// requires specifying the concrete watcher type.
+///
+/// ```no_run
+/// use notify::{Result, WatchMode, Watcher};
+/// use std::path::Path;
+///
+/// fn main() -> Result<()> {
+///     let mut watcher = notify::recommended_watcher(|res| println!("event: {res:?}"))?;
+///     watcher.watch(Path::new("."), WatchMode::recursive())?;
+///     Ok(())
+/// }
+/// ```
 pub fn recommended_watcher<F>(event_handler: F) -> Result<RecommendedWatcher>
 where
     F: EventHandler,
