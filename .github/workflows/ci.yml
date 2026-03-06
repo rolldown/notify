@@ -141,13 +141,13 @@ jobs:
           version: "42.0.1"
 
       - name: Build for WASI
-        run: cargo +nightly-2025-11-24 build --target wasm32-wasip1-threads --workspace --verbose
+        run: cargo +nightly-2025-11-21 build --target wasm32-wasip1-threads --workspace --verbose
 
       - name: Build examples for WASI
-        run: cargo +nightly-2025-11-24 build --examples --target wasm32-wasip1-threads --verbose
+        run: cargo +nightly-2025-11-21 build --examples --target wasm32-wasip1-threads --verbose
 
       - name: Test for WASI
         # `--lib --bins --tests` is to skip doc tests
-        run: cargo +nightly-2025-11-24 test --target wasm32-wasip1-threads --lib --bins --tests --workspace --exclude rolldown-notify-debouncer-full --exclude rolldown-notify-debouncer-mini --verbose -- --nocapture
+        run: cargo +nightly-2025-11-21 test --target wasm32-wasip1-threads --lib --bins --tests --workspace --exclude rolldown-notify-debouncer-full --exclude rolldown-notify-debouncer-mini --verbose -- --nocapture
         env:
           WASMTIME_BACKTRACE_DETAILS: 1
