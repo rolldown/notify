@@ -1,11 +1,7 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use file_id::{FileId, get_file_id};
-use notify::{RecursiveMode, WatchMode};
-use walkdir::WalkDir;
+use file_id::FileId;
+use notify::WatchMode;
 
 /// The interface of a file ID cache.
 ///
@@ -39,54 +35,6 @@ pub trait FileIdCache {
     }
 }
 
-/// A cache to hold the file system IDs of all watched files.
-///
-/// The file ID cache uses unique file IDs provided by the file system and is used to stitch together
-/// rename events in case the notification back-end doesn't emit rename cookies.
-#[derive(Debug, Clone, Default)]
-pub struct FileIdMap {
-    paths: HashMap<PathBuf, FileId>,
-}
-
-impl FileIdMap {
-    /// Construct an empty cache.
-    #[must_use]
-    pub fn new() -> Self {
-        FileIdMap::default()
-    }
-
-    fn dir_scan_depth(is_recursive: bool) -> usize {
-        if is_recursive { usize::MAX } else { 1 }
-    }
-}
-
-impl FileIdCache for FileIdMap {
-    fn cached_file_id(&self, path: &Path) -> Option<impl AsRef<FileId>> {
-        self.paths.get(path)
-    }
-
-    fn add_path(&mut self, path: &Path, watch_mode: WatchMode) {
-        let is_recursive = watch_mode.recursive_mode == RecursiveMode::Recursive;
-
-        for (path, file_id) in WalkDir::new(path)
-            .follow_links(true)
-            .max_depth(Self::dir_scan_depth(is_recursive))
-            .into_iter()
-            .filter_map(|entry| {
-                let path = entry.ok()?.into_path();
-                let file_id = get_file_id(&path).ok()?;
-                Some((path, file_id))
-            })
-        {
-            self.paths.insert(path, file_id);
-        }
-    }
-
-    fn remove_path(&mut self, path: &Path) {
-        self.paths.retain(|p, _| !p.starts_with(path));
-    }
-}
-
 /// An implementation of the `FileIdCache` trait that doesn't hold any data.
 ///
 /// This pseudo cache can be used to disable the file tracking using file system IDs.
@@ -112,8 +60,8 @@ impl FileIdCache for NoCache {
 }
 
 /// The recommended file ID cache implementation for the current platform
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_family = "wasm"))]
 pub type RecommendedCache = NoCache;
 /// The recommended file ID cache implementation for the current platform
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_family = "wasm")))]
 pub type RecommendedCache = FileIdMap;
