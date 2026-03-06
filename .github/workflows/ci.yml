@@ -141,10 +141,10 @@ jobs:
           version: "42.0.1"
 
       - name: Build for WASI
-        run: cargo build --target wasm32-wasip2 --workspace --verbose
+        run: cargo +nightly-2025-11-24 build --target wasm32-wasip1-threads --workspace --verbose
 
       - name: Build examples for WASI
-        run: cargo build --examples --target wasm32-wasip2 --verbose
+        run: cargo +nightly-2025-11-24 build --examples --target wasm32-wasip1-threads --verbose
 
       - name: Test for WASI
         # `--lib --bins --tests` is to skip doc tests
