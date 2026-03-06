@@ -64,4 +64,4 @@ impl FileIdCache for NoCache {
 pub type RecommendedCache = NoCache;
 /// The recommended file ID cache implementation for the current platform
 #[cfg(not(any(target_os = "linux", target_os = "android", target_family = "wasm")))]
-pub type RecommendedCache = FileIdMap;
+pub type RecommendedCache = crate::file_id_map::FileIdMap;
