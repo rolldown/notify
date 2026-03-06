@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.7.4...rolldown-notify-debouncer-full-v0.7.5) - 2026-03-06
+
+### Added
+
+- support wasm build ([#67](https://github.com/rolldown/notify/pull/67))
+
 ## [0.7.4](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.7.3...rolldown-notify-debouncer-full-v0.7.4) - 2025-12-25
 
 ### Other

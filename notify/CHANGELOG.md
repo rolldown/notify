@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.2.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.1.0...rolldown-notify-v10.2.0) - 2026-03-06
+
+### Added
+
+- support wasm build ([#67](https://github.com/rolldown/notify/pull/67))
+
 ## [10.1.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.0.0...rolldown-notify-v10.1.0) - 2025-12-25
 
 ### Added
