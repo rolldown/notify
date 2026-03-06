@@ -383,10 +383,7 @@ impl AsRef<Path> for TestDir {
 pub fn testdir() -> TestDir {
     #[cfg(target_family = "wasm")]
     {
-        let path = std::env::var("TEMP")
-            .or_else(|_| std::env::var("TMPDIR"))
-            .unwrap_or("/tmp".to_string());
-        let _ = tempfile::env::override_temp_dir(std::path::Path::new(&path));
+        let _ = tempfile::env::override_temp_dir(std::path::Path::new("/tmp"));
     }
 
     let dir = tempfile::tempdir().expect("Unable to create tempdir");

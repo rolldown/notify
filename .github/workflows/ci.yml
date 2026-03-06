@@ -130,11 +130,24 @@ jobs:
           save-cache: ${{ github.ref_name == 'main' }}
           cache-key: warm-wasi
 
-      - name: Add Rust target
-        run: rustup target add wasm32-wasip2
+      - name: Install nightly toolchain and add Rust targets
+        run: |
+          rustup toolchain install nightly-2025-11-21
+          rustup +nightly-2025-11-21 target add wasm32-wasip1-threads
+
+      - name: Install wasmtime
+        uses: bytecodealliance/actions/wasmtime/setup@6aecabac1eb1dcf7ed94ba9471974415ee2ebef2 #v1.1.2
+        with:
+          version: "42.0.1"
 
       - name: Build for WASI
-        run: cargo build --target wasm32-wasip2 --workspace --verbose
+        run: cargo +nightly-2025-11-21 build --target wasm32-wasip1-threads --workspace --verbose
 
       - name: Build examples for WASI
-        run: cargo build --examples --target wasm32-wasip2 --verbose
+        run: cargo +nightly-2025-11-21 build --examples --target wasm32-wasip1-threads --verbose
+
+      - name: Test for WASI
+        # `--lib --bins --tests` is to skip doc tests
+        run: cargo +nightly-2025-11-21 test --target wasm32-wasip1-threads --lib --bins --tests --workspace --exclude rolldown-notify-debouncer-full --exclude rolldown-notify-debouncer-mini --verbose -- --nocapture
+        env:
+          WASMTIME_BACKTRACE_DETAILS: 1
