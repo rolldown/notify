@@ -132,9 +132,8 @@ jobs:
 
       - name: Install nightly toolchain and add Rust targets
         run: |
-          rustup toolchain install nightly-2025-11-24
-          rustup target add wasm32-wasip2
-          rustup +nightly-2025-11-24 target add wasm32-wasip1-threads
+          rustup toolchain install nightly-2025-11-21
+          rustup +nightly-2025-11-21 target add wasm32-wasip1-threads
 
       - name: Install wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@6aecabac1eb1dcf7ed94ba9471974415ee2ebef2 #v1.1.2
