@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/rolldown/notify/compare/rolldown-file-id-v0.2.5...rolldown-file-id-v0.2.6) - 2026-03-06
+
+### Added
+
+- support wasm build ([#67](https://github.com/rolldown/notify/pull/67))
+
 ## [0.2.5](https://github.com/rolldown/notify/compare/rolldown-file-id-v0.2.4...rolldown-file-id-v0.2.5) - 2025-12-18
 
 ### Other
