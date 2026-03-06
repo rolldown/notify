@@ -10,6 +10,7 @@
 [default.extend-identifiers]
 ecd686ba = "ecd686ba" # In the CHANGELOG.md
 waitres = "waitres"
+bimap = "bimap"
 
 # Match Inside a Word - Case Insensitive
 [default.extend-words]

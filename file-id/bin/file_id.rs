@@ -21,6 +21,11 @@ fn print_file_id(path: &str) {
     print_result(file_id::get_high_res_file_id(path));
 }
 
+#[cfg(not(any(target_family = "unix", target_family = "windows")))]
+fn print_file_id(_path: &str) {
+    // no-op on unsupported platforms
+}
+
 fn print_result(result: io::Result<FileId>) {
     match result {
         Ok(file_id) => println!("{file_id:?}"),

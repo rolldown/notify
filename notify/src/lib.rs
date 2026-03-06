@@ -466,8 +466,6 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use tempfile::tempdir;
-
     use super::{
         Config, Error, ErrorKind, Event, NullWatcher, PollWatcher, RecommendedWatcher,
         RecursiveMode, Result, Watcher, WatcherKind,
@@ -518,7 +516,7 @@ mod tests {
     #[expect(clippy::print_stdout)]
     #[test]
     fn integration() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
+        let dir = testdir();
 
         // set up the watcher
         let (tx, rx) = std::sync::mpsc::channel();
@@ -547,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_paths_mut() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
+        let dir = testdir();
 
         let dir_a = dir.path().join("a");
         let dir_b = dir.path().join("b");
