@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.2.1](https://github.com/rolldown/notify/compare/rolldown-notify-v10.2.0...rolldown-notify-v10.2.1) - 2026-03-06
+
+### Other
+
+- add wasi tests ([#69](https://github.com/rolldown/notify/pull/69))
+
 ## [10.2.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.1.0...rolldown-notify-v10.2.0) - 2026-03-06
 
 ### Added
