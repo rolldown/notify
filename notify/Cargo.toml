@@ -57,13 +57,15 @@ kqueue.workspace = true
 mio.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
 tempfile.workspace = true
 pretty_assertions.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+criterion.workspace = true
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+trash.workspace = true
 
 [[bench]]
 name = "paths_mut_bench"
 harness = false
-
-[target.'cfg(target_os = "windows")'.dev-dependencies]
-trash.workspace = true

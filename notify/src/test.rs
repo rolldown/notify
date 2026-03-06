@@ -381,13 +381,14 @@ impl AsRef<Path> for TestDir {
 
 /// Creates a [`TestDir`]
 pub fn testdir() -> TestDir {
+    #[cfg(target_family = "wasm")]
+    {
+        let path = std::env::var("TEMP").or_else(|_| std::env::var("TMPDIR")).unwrap_or("/tmp".to_string());
+        let _ = tempfile::env::override_temp_dir(std::path::Path::new(&path));
+    }
+
     let dir = tempfile::tempdir().expect("Unable to create tempdir");
-    let path = std::fs::canonicalize(dir.path()).unwrap_or_else(|e| {
-        panic!(
-            "unable to canonicalize tempdir path {:?}: {e:?}",
-            dir.path()
-        )
-    });
+    let path = canonicalize_path(dir.path());
     let nested_path = path.join("nested");
     fs::create_dir(&nested_path).expect("Unable to create nested directory");
     TestDir {
@@ -395,6 +396,23 @@ pub fn testdir() -> TestDir {
         path: nested_path,
     }
 }
+
+#[cfg(not(target_family = "wasm"))]
+fn canonicalize_path(path: impl AsRef<Path>) -> PathBuf {
+    std::fs::canonicalize(path.as_ref()).unwrap_or_else(|e| {
+        panic!(
+            "unable to canonicalize path {:?}: {e:?}",
+            path.as_ref()
+        )
+    })
+}
+
+// `std::fs::canonicalize` is not supported in wasi: https://github.com/rust-lang/rust/issues/141854
+#[cfg(target_family = "wasm")]
+fn canonicalize_path(path: impl AsRef<Path>) -> PathBuf {
+    path.as_ref().to_path_buf()
+}
+
 
 /// Collection to store [`notify_types::event::EventAttributes::tracker`]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
