@@ -1,0 +1,9 @@
+[target.wasm32-wasip1-threads]
+runner = [
+  "wasmtime",
+  "run",
+  "-S", "threads=y",
+  "-W", "threads=y",
+  "-W", "shared-memory=y",
+  "--dir", "/tmp"
+]
