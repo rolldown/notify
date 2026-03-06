@@ -103,6 +103,7 @@
 //!     // Add a path to be watched. All files and directories at that path and
 //!     // below will be monitored for changes.
 //! #     #[cfg(not(any(
+//! #     target_family = "wasm",
 //! #     target_os = "freebsd",
 //! #     target_os = "openbsd",
 //! #     target_os = "dragonfly",
@@ -146,6 +147,7 @@
 //!       // we will just use the same watcher kind again here
 //!       let mut watcher2 = notify::recommended_watcher(event_fn)?;
 //! #     #[cfg(not(any(
+//! #     target_family = "wasm",
 //! #     target_os = "freebsd",
 //! #     target_os = "openbsd",
 //! #     target_os = "dragonfly",
@@ -458,7 +460,8 @@ where
     RecommendedWatcher::new(event_handler, Config::default())
 }
 
-#[cfg(test)]
+// wasm uses polling watcher which requires a different code to avoid flaky failures
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use std::{
         fs, iter,
@@ -466,37 +469,8 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::{
-        Config, Error, ErrorKind, Event, NullWatcher, PollWatcher, RecommendedWatcher,
-        RecursiveMode, Result, Watcher, WatcherKind,
-    };
+    use super::{Config, Event, RecommendedWatcher, Result, Watcher};
     use crate::{config::WatchMode, test::*};
-
-    #[test]
-    fn test_object_safe() {
-        let _: &dyn Watcher = &NullWatcher;
-    }
-
-    #[test]
-    fn test_debug_impl() {
-        macro_rules! assert_debug_impl {
-            ($t:ty) => {{
-                #[expect(clippy::allow_attributes)]
-                #[allow(dead_code)]
-                trait NeedsDebug: std::fmt::Debug {}
-                impl NeedsDebug for $t {}
-            }};
-        }
-
-        assert_debug_impl!(Config);
-        assert_debug_impl!(Error);
-        assert_debug_impl!(ErrorKind);
-        assert_debug_impl!(NullWatcher);
-        assert_debug_impl!(PollWatcher);
-        assert_debug_impl!(RecommendedWatcher);
-        assert_debug_impl!(RecursiveMode);
-        assert_debug_impl!(WatcherKind);
-    }
 
     fn iter_with_timeout(rx: &mpsc::Receiver<Result<Event>>) -> impl Iterator<Item = Event> + '_ {
         // wait for up to 10 seconds for the events
@@ -665,5 +639,39 @@ mod tests {
         std::fs::remove_file(&path).expect("remove");
 
         rx.wait_unordered([expected(path).remove()]);
+    }
+}
+
+#[cfg(test)]
+mod tests_other {
+    use super::{
+        Config, Error, ErrorKind, NullWatcher, PollWatcher, RecommendedWatcher, RecursiveMode,
+        Watcher, WatcherKind,
+    };
+
+    #[test]
+    fn test_object_safe() {
+        let _: &dyn Watcher = &NullWatcher;
+    }
+
+    #[test]
+    fn test_debug_impl() {
+        macro_rules! assert_debug_impl {
+            ($t:ty) => {{
+                #[expect(clippy::allow_attributes)]
+                #[allow(dead_code)]
+                trait NeedsDebug: std::fmt::Debug {}
+                impl NeedsDebug for $t {}
+            }};
+        }
+
+        assert_debug_impl!(Config);
+        assert_debug_impl!(Error);
+        assert_debug_impl!(ErrorKind);
+        assert_debug_impl!(NullWatcher);
+        assert_debug_impl!(PollWatcher);
+        assert_debug_impl!(RecommendedWatcher);
+        assert_debug_impl!(RecursiveMode);
+        assert_debug_impl!(WatcherKind);
     }
 }

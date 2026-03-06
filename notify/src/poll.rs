@@ -837,6 +837,11 @@ impl Drop for PollWatcher {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_family = "wasm")]
+    use std::thread::sleep;
+    #[cfg(target_family = "wasm")]
+    use std::time::Duration;
+
     use super::PollWatcher;
     use crate::{Error, ErrorKind, RecursiveMode, TargetMode, WatchMode, Watcher, test::*};
 
@@ -993,6 +998,7 @@ mod tests {
             .ensure_no_tail();
 
         std::fs::rename(&new_path, &path).expect("rename2");
+        watcher.watcher.wait_next_scan().expect("wait next scan");
 
         rx.sleep_while_exists(&new_path);
         rx.sleep_until_exists(&path);
@@ -1024,6 +1030,9 @@ mod tests {
 
         rx.sleep_while_exists(&path);
         rx.sleep_until_exists(&new_path);
+
+        #[cfg(target_family = "wasm")]
+        sleep(Duration::from_millis(100));
 
         rx.wait_unordered_exact([expected(&path).remove_file()])
             .ensure_no_tail();
@@ -1109,6 +1118,9 @@ mod tests {
             expected(&path).modify_data_any().optional(),
             expected(&path).remove_file(),
         ]);
+
+        #[cfg(target_family = "wasm")]
+        sleep(Duration::from_millis(100));
 
         std::fs::write(&path, "").expect("write");
 

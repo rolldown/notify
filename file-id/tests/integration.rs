@@ -1,3 +1,4 @@
+#![cfg(any(target_family = "windows", target_family = "unix"))]
 use file_id::{get_file_id, get_file_id_no_follow};
 use std::{fs, io};
 use tempfile::TempDir;
