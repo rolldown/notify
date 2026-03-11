@@ -93,7 +93,7 @@ unsafe impl Send for FsEventWatcher {}
 unsafe impl Sync for FsEventWatcher {}
 
 #[expect(clippy::too_many_lines)]
-fn translate_flags(flags: &StreamFlags, precise: bool) -> Vec<Event> {
+fn translate_flags(flags: &StreamFlags, precise: bool, root_path_exists: bool) -> Vec<Event> {
     let mut evs = Vec::new();
 
     // «Denotes a sentinel event sent to mark the end of the "historical" events
@@ -151,7 +151,12 @@ fn translate_flags(flags: &StreamFlags, precise: bool) -> Vec<Event> {
             EventKind::Remove(RemoveKind::Any)
         };
 
-        evs.push(Event::new(kind).set_info("root changed"));
+        // When ROOT_CHANGED fires but the path still exists on disk, the
+        // remove is spurious (e.g. creating a previously non-existent watched
+        // path, or recreating a deleted one).
+        if !kind.is_remove() || !root_path_exists {
+            evs.push(Event::new(kind).set_info("root changed"));
+        }
     }
 
     // A path was mounted at the event path; we treat that as a create.
@@ -552,7 +557,7 @@ extern "C-unwind" fn callback(
             event_paths,
             event_flags,
             event_ids,
-        )
+        );
     }))
     .map_err(|_| {
         tracing::error!("panic in FSEvents callback; dropping pending events");
@@ -576,7 +581,7 @@ unsafe fn callback_impl(
         let path = unsafe { CStr::from_ptr(*event_paths.add(p)) };
         let path = PathBuf::from(OsStr::from_bytes(path.to_bytes()));
 
-        let raw_flag = unsafe { *event_flags.as_ptr().add(p) } as u32;
+        let raw_flag = unsafe { *event_flags.as_ptr().add(p) };
         let flag = StreamFlags::from_bits_truncate(raw_flag);
         let unknown_bits = raw_flag & !StreamFlags::all().bits();
         if unknown_bits != 0 {
@@ -612,7 +617,8 @@ unsafe fn callback_impl(
 
         tracing::trace!(?path, ?flag, "FSEvent event received");
 
-        for ev in translate_flags(&flag, true) {
+        let root_path_exists = flag.contains(StreamFlags::ROOT_CHANGED) && path.exists();
+        for ev in translate_flags(&flag, true, root_path_exists) {
             // TODO: precise
             let ev = ev.add_path(path.clone());
             let mut event_handler = match event_handler.lock() {
@@ -1189,6 +1195,39 @@ mod tests {
         std::fs::create_dir(&path).expect("create_dir2");
 
         // rx.ensure_empty_with_wait(); // TODO: should unwatch
+    }
+
+    #[test]
+    fn delete_parent_of_watched_dir() {
+        let tmpdir = testdir();
+        let (mut watcher, rx) = watcher();
+
+        let parent = tmpdir.path().join("parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).expect("create_dir_all");
+
+        watcher.watch_recursively(&child);
+
+        std::fs::remove_dir_all(&parent).expect("remove_dir_all");
+
+        rx.wait_unordered([expected(&child).remove_any()]);
+    }
+
+    #[test]
+    fn rename_parent_of_watched_dir() {
+        let tmpdir = testdir();
+        let (mut watcher, rx) = watcher();
+
+        let parent = tmpdir.path().join("parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).expect("create_dir_all");
+
+        watcher.watch_recursively(&child);
+
+        let new_parent = tmpdir.path().join("renamed_parent");
+        std::fs::rename(&parent, &new_parent).expect("rename");
+
+        rx.wait_unordered([expected(&child).remove_any()]);
     }
 
     #[test]
