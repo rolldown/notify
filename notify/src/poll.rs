@@ -1046,8 +1046,11 @@ mod tests {
         #[cfg(target_family = "wasm")]
         sleep(Duration::from_millis(100));
 
-        rx.wait_unordered_exact([expected(&path).remove_file()])
-            .ensure_no_tail();
+        rx.wait_unordered_exact([
+            expected(&path).modify_data_any().optional(),
+            expected(&path).remove_file(),
+        ])
+        .ensure_no_tail();
 
         let result = watcher.watcher.watch(
             &path,
