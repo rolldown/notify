@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.3.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.2.0...rolldown-notify-v10.3.0) - 2026-03-13
+
+### Added
+
+- *(inotify)* capture `UNMOUNT` event
+
+### Fixed
+
+- *(fsevent)* set `is: clone` info for more `IS_CLONE` events
+- *(windows)* normalize event paths ([#74](https://github.com/rolldown/notify/pull/74))
+- *(fsevent)* handle `ROOT_CHANGED` for non-existing path
+- *(inotify)* do not modify inotify watcher when unmounting
+- *(fsevent)* do not panic on invalid inputs
+- handle `ROOT_CHANGED` nicely
+- `target_os` entry for `dragonflyBSD` in `Cargo.toml`
+- add `kFSEventStreamCreateFlagWatchRoot` to `FSEvents` stream flags ([#769](https://github.com/rolldown/notify/pull/769))
+- `FsEvenWatcher` remove event ordering
+
+### Other
+
+- tweak `rename_self_file_no_track` polling test to reduce flakiness ([#72](https://github.com/rolldown/notify/pull/72))
+- improve watcher docs
+- *(macos)* document APFS behavior as known issues
+- fix flaky PollWatcher tests
+- add wasi tests ([#69](https://github.com/rolldown/notify/pull/69))
+
 ## [10.2.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.1.0...rolldown-notify-v10.2.0) - 2026-03-06
 
 ### Added
