@@ -45,6 +45,35 @@ use windows_sys::Win32::System::Threading::{
 
 const BUF_SIZE: u32 = 16384;
 
+fn windows_namespace_prefix_len(path: &[u16]) -> usize {
+    let is_separator = |ch: u16| ch == '/' as u16 || ch == '\\' as u16;
+
+    if path.len() >= 4
+        && is_separator(path[0])
+        && is_separator(path[1])
+        && (path[2] == '?' as u16 || path[2] == '.' as u16)
+        && is_separator(path[3])
+    {
+        4
+    } else {
+        0
+    }
+}
+
+fn normalize_path_separators(path: PathBuf) -> PathBuf {
+    let separator = '\\' as u16;
+    let mut encoded_path: Vec<u16> = path.into_os_string().encode_wide().collect();
+    let prefix_len = windows_namespace_prefix_len(&encoded_path);
+
+    for ch in encoded_path.iter_mut().skip(prefix_len) {
+        if *ch == '/' as u16 || *ch == '\\' as u16 {
+            *ch = separator;
+        }
+    }
+
+    PathBuf::from(OsString::from_wide(&encoded_path))
+}
+
 #[derive(Clone)]
 struct ReadData {
     dir: PathBuf, // directory that is being watched
@@ -552,10 +581,12 @@ unsafe extern "system" fn handle_event(
             )
         };
         // prepend root to get a full path
-        let path = request
-            .data
-            .dir
-            .join(PathBuf::from(OsString::from_wide(encoded_path)));
+        let path = normalize_path_separators(
+            request
+                .data
+                .dir
+                .join(PathBuf::from(OsString::from_wide(encoded_path))),
+        );
 
         // if we are watching a single file, ignore the event unless the path is exactly
         // the watched file
@@ -783,10 +814,13 @@ unsafe impl Sync for ReadDirectoryChangesWatcher {}
 pub mod tests {
     use crate::{
         Error, ErrorKind, ReadDirectoryChangesWatcher, RecursiveMode, TargetMode, WatchMode,
-        Watcher, test::*,
+        Watcher, test::*, windows::normalize_path_separators,
     };
 
-    use std::{collections::HashSet, time::Duration};
+    use std::{
+        collections::HashSet, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf,
+        time::Duration,
+    };
 
     fn watcher() -> (TestWatcher<ReadDirectoryChangesWatcher>, Receiver) {
         channel()
@@ -822,6 +856,42 @@ pub mod tests {
     fn watcher_is_send_and_sync() {
         fn check<T: Send + Sync>() {}
         check::<ReadDirectoryChangesWatcher>();
+    }
+
+    #[test]
+    fn normalize_joined_event_path_for_posix_watch_path() {
+        let dir = PathBuf::from("G:/Feature");
+        let raw_event_name: Vec<u16> = "22.mp4".encode_utf16().collect();
+        let relative = PathBuf::from(OsString::from_wide(&raw_event_name));
+        let path = normalize_path_separators(dir.join(relative));
+
+        assert_eq!(path, PathBuf::from(r"G:\Feature\22.mp4"));
+    }
+
+    #[test]
+    fn normalize_path_separators_keeps_windows_namespace_prefix() {
+        let path = PathBuf::from(r"\\?\C:/very/long/file");
+        let normalized = normalize_path_separators(path);
+        assert_eq!(normalized, PathBuf::from(r"\\?\C:\very\long\file"));
+    }
+
+    #[test]
+    fn create_file_normalized() {
+        let tmpdir = testdir();
+        let (mut watcher, rx) = watcher();
+        let tmpdir_without_prefix =
+            PathBuf::from(tmpdir.path().to_str().unwrap().replace("\\\\?\\", ""));
+        let tmpdir_normalized =
+            PathBuf::from(tmpdir_without_prefix.to_str().unwrap().replace('\\', "/"));
+        watcher.watch_recursively(&tmpdir_normalized);
+
+        let path = tmpdir_without_prefix.join("entry");
+        std::fs::File::create_new(&path).expect("create");
+
+        let event = rx.recv();
+        assert_eq!(event.paths.len(), 1);
+        assert_eq!(event.paths[0], path);
+        assert_eq!(event.paths[0].to_str().unwrap(), path.to_str().unwrap());
     }
 
     #[test]
