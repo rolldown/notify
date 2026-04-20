@@ -508,9 +508,6 @@ impl<T: FileIdCache> DebounceDataInner<T> {
         self.cache.remove_path(path);
 
         match self.queues.get_mut(path) {
-            Some(queue) if queue.was_created() => {
-                self.queues.remove(path);
-            }
             Some(queue) => {
                 queue.events = [DebouncedEvent::new(event, time)].into();
             }
@@ -814,6 +811,7 @@ mod tests {
     #[rstest]
     fn state(
         #[values(
+            "add_create_and_remove_event",
             "add_create_event",
             "add_create_event_after_remove_event",
             "add_create_dir_event_twice",
