@@ -22,6 +22,6 @@ jobs:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: oxc-project/release-plz@44b98e8dda1a7783d4ec2ef66e2f37a3e8c1c759 # v1.0.4
+      - uses: oxc-project/release-plz@e2b12f55ad64a22af8e93634b94439c42913afca # v1.0.6
         with:
           PAT: ${{ steps.app-token.outputs.token }}
