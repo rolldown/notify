@@ -3,6 +3,7 @@ name: Release
 permissions: {}
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -21,10 +22,6 @@ jobs:
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-          permission-pull-requests: write
 
       - uses: oxc-project/release-plz@e2b12f55ad64a22af8e93634b94439c42913afca # v1.0.6
         with:
