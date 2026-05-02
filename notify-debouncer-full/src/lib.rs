@@ -201,7 +201,9 @@ impl Queue {
 #[derive(Debug)]
 pub(crate) struct DebounceDataInner<T> {
     queues: HashMap<PathBuf, Queue, FxBuildHasher>,
-    roots: Vec<(PathBuf, WatchMode)>,
+    /// Registered watch roots, kept **sorted by path** so that `add_root`
+    /// can dedupe via binary search in O(log N) and doesn't suffer from injection
+    roots: VecDeque<(PathBuf, WatchMode)>,
     cache: T,
     rename_event: Option<(DebouncedEvent, Option<FileId>)>,
     rescan_event: Option<DebouncedEvent>,
@@ -213,7 +215,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
     pub(crate) fn new(cache: T, timeout: Duration) -> Self {
         Self {
             queues: HashMap::default(),
-            roots: Vec::new(),
+            roots: VecDeque::new(),
             cache,
             rename_event: None,
             rescan_event: None,
@@ -288,7 +290,8 @@ impl<T: FileIdCache> DebounceDataInner<T> {
         tracing::trace!("raw event: {event:?}");
 
         if event.need_rescan() {
-            self.cache.rescan(&self.roots);
+            let roots = self.roots.make_contiguous();
+            self.cache.rescan(roots);
             self.rescan_event = Some(DebouncedEvent { event, time: now() });
             return;
         }
@@ -349,19 +352,19 @@ impl<T: FileIdCache> DebounceDataInner<T> {
     }
 
     fn watch_mode(&self, path: &Path) -> WatchMode {
-        self.roots
-            .iter()
-            .find_map(|(root, watch_mode)| {
-                if path.starts_with(root) {
-                    Some(*watch_mode)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(WatchMode {
-                recursive_mode: RecursiveMode::NonRecursive,
-                target_mode: TargetMode::TrackPath, // TODO: correct default?
-            })
+        for ancestor in path.ancestors() {
+            if let Ok(index) = self
+                .roots
+                .binary_search_by(|(root, _)| root.as_path().cmp(ancestor))
+            {
+                return self.roots[index].1;
+            }
+        }
+
+        WatchMode {
+            recursive_mode: RecursiveMode::NonRecursive,
+            target_mode: TargetMode::TrackPath, // TODO: correct default?
+        }
     }
 
     fn handle_rename_from(&mut self, event: Event) {
@@ -588,12 +591,16 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
 
         let mut data = self.data.lock().unwrap();
 
-        // skip, if the root has already been added
-        if data.roots.iter().any(|(p, _)| p == &path) {
-            return;
+        match data
+            .roots
+            .binary_search_by(|(p, _)| p.as_path().cmp(path.as_path()))
+        {
+            Ok(_) => return, // already registered
+            Err(pos) => {
+                // `VecDeque::insert` is O(min(pos, len - pos))
+                data.roots.insert(pos, (path.clone(), watch_mode));
+            }
         }
-
-        data.roots.push((path.clone(), watch_mode));
 
         data.cache.add_path(&path, watch_mode);
     }
@@ -863,7 +870,7 @@ mod tests {
         MockTime::set_time(time);
 
         let mut state = test_case.state.into_debounce_data_inner(time);
-        state.roots = vec![(PathBuf::from("/"), WatchMode::recursive())];
+        state.roots = VecDeque::from([(PathBuf::from("/"), WatchMode::recursive())]);
 
         let mut prev_event_time = Duration::default();
 
@@ -946,6 +953,31 @@ mod tests {
                 "debounced events after a `{delay}` delay"
             );
         }
+    }
+
+    #[test]
+    fn recursive_mode_uses_recursive_root_for_overlapping_watches() {
+        let state = DebounceDataInner {
+            queues: HashMap::default(),
+            roots: VecDeque::from([
+                (PathBuf::from("root"), WatchMode::non_recursive()),
+                (PathBuf::from("root/nested"), WatchMode::recursive()),
+            ]),
+            cache: NoCache,
+            rename_event: None,
+            rescan_event: None,
+            errors: Vec::new(),
+            timeout: Duration::from_millis(50),
+        };
+
+        assert_eq!(
+            state.watch_mode(Path::new("root/nested/child")),
+            WatchMode::recursive()
+        );
+        assert_eq!(
+            state.watch_mode(Path::new("root/other")),
+            WatchMode::non_recursive()
+        );
     }
 
     #[test]
