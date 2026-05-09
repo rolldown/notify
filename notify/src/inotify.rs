@@ -815,8 +815,7 @@ impl EventLoop {
 /// return `DirEntry` when it is a directory
 fn filter_dir(e: walkdir::Result<walkdir::DirEntry>) -> Option<walkdir::DirEntry> {
     if let Ok(e) = e
-        && let Ok(metadata) = e.metadata()
-        && metadata.is_dir()
+        && e.file_type().is_dir()
     {
         return Some(e);
     }
