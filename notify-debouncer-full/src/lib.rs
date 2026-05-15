@@ -868,7 +868,11 @@ mod tests {
         for event in test_case.events {
             let event_time = Duration::from_millis(event.time);
             let event = event.into_debounced_event(time, None);
-            MockTime::advance(event_time.checked_sub(prev_event_time).expect("prev_event_time be smaller"));
+            MockTime::advance(
+                event_time
+                    .checked_sub(prev_event_time)
+                    .expect("prev_event_time be smaller"),
+            );
             prev_event_time = event_time;
             state.add_event(event.event);
         }
