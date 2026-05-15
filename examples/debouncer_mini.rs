@@ -24,12 +24,12 @@ fn main() {
             std::thread::sleep(Duration::from_millis(250));
         }
         // tracing::debug!("waiting 20s");
-        std::thread::sleep(Duration::from_millis(20000));
+        std::thread::sleep(Duration::from_secs(20));
         // tracing::info!("running 3s events");
         for _ in 0..20 {
             // tracing::debug!("writing..");
             std::fs::write(path, b"Lorem ipsum").unwrap();
-            std::thread::sleep(Duration::from_millis(3000));
+            std::thread::sleep(Duration::from_secs(3));
         }
     });
 
