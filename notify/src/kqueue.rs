@@ -10,6 +10,7 @@ use super::{Config, Error, EventHandler, RecursiveMode, Result, WatchMode, Watch
 use crate::{BoundSender, bounded};
 use crate::{ErrorKind, PathsMut, Receiver, Sender, TargetMode, unbounded};
 use kqueue::{EventData, EventFilter, FilterFlag, Ident};
+use rustc_hash::FxBuildHasher;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::metadata;
@@ -35,8 +36,8 @@ struct EventLoop {
     event_loop_rx: Receiver<EventLoopMsg>,
     kqueue: kqueue::Watcher,
     event_handler: Box<dyn EventHandler>,
-    watches: HashMap<PathBuf, WatchMode>,
-    watch_handles: HashSet<PathBuf>,
+    watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    watch_handles: HashSet<PathBuf, FxBuildHasher>,
     follow_symlinks: bool,
 }
 
@@ -80,8 +81,8 @@ impl EventLoop {
             event_loop_rx,
             kqueue,
             event_handler,
-            watches: HashMap::new(),
-            watch_handles: HashSet::new(),
+            watches: HashMap::default(),
+            watch_handles: HashSet::default(),
             follow_symlinks,
         };
         Ok(event_loop)
@@ -164,14 +165,14 @@ impl EventLoop {
                 }
                 #[cfg(test)]
                 EventLoopMsg::GetWatchHandles(tx) => {
-                    let handles = self.watch_handles.clone();
+                    let handles = self.watch_handles.iter().cloned().collect();
                     tx.send(handles).unwrap();
                 }
             }
         }
     }
 
-    fn is_watched_path(watches: &HashMap<PathBuf, WatchMode>, path: &Path) -> bool {
+    fn is_watched_path(watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>, path: &Path) -> bool {
         if watches.contains_key(path) {
             return true;
         }

@@ -10,6 +10,7 @@ use crate::{
 };
 use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
 use crate::{WatcherKind, event::*};
+use rustc_hash::FxBuildHasher;
 use std::alloc;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -77,7 +78,7 @@ fn normalize_path_separators(path: PathBuf) -> PathBuf {
 #[derive(Clone)]
 struct ReadData {
     dir: PathBuf, // directory that is being watched
-    watches: Rc<RefCell<HashMap<PathBuf, WatchMode>>>,
+    watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
     complete_sem: HANDLE,
     is_recursive: bool,
 }
@@ -121,8 +122,8 @@ struct ReadDirectoryChangesServer {
     rx: Receiver<Action>,
     event_handler: Arc<Mutex<dyn EventHandler>>,
     cmd_tx: Sender<Result<PathBuf>>,
-    watches: Rc<RefCell<HashMap<PathBuf, WatchMode>>>,
-    watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool)>,
+    watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
+    watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool), FxBuildHasher>,
     wakeup_sem: HANDLE,
 }
 
@@ -146,8 +147,8 @@ impl ReadDirectoryChangesServer {
                         rx: action_rx,
                         event_handler,
                         cmd_tx,
-                        watches: Rc::new(RefCell::new(HashMap::new())),
-                        watch_handles: HashMap::new(),
+                        watches: Rc::new(RefCell::new(HashMap::default())),
+                        watch_handles: HashMap::default(),
                         wakeup_sem,
                     };
                     server.run();

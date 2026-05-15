@@ -10,6 +10,7 @@ use crate::bimap::BiHashMap;
 use crate::{BoundSender, Receiver, Sender, TargetMode, bounded, unbounded};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
+use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::collections::HashSet;
@@ -39,8 +40,13 @@ struct EventLoop {
     event_loop_rx: Receiver<EventLoopMsg>,
     inotify: Option<Inotify>,
     event_handler: Box<dyn EventHandler>,
-    watches: HashMap<PathBuf, WatchMode>,
-    watch_handles: BiHashMap<WatchDescriptor, PathBuf, (/* watch_self */ bool, /* is_dir */ bool)>,
+    watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    watch_handles: BiHashMap<
+        WatchDescriptor,
+        PathBuf,
+        (/* watch_self */ bool, /* is_dir */ bool),
+        FxBuildHasher,
+    >,
     rename_event: Option<Event>,
     follow_links: bool,
 }
@@ -65,7 +71,7 @@ enum EventLoopMsg {
 fn add_watch_by_event(
     path: &PathBuf,
     is_file_without_hardlinks: bool,
-    watches: &HashMap<PathBuf, WatchMode>,
+    watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
     add_watches: &mut Vec<(PathBuf, bool, bool)>,
 ) {
     if let Some(watch_mode) = watches.get(path) {
@@ -102,7 +108,7 @@ fn add_watch_by_event(
 #[inline]
 fn remove_watch_by_event(
     path: &PathBuf,
-    watch_handles: &BiHashMap<WatchDescriptor, PathBuf, (bool, bool)>,
+    watch_handles: &BiHashMap<WatchDescriptor, PathBuf, (bool, bool), FxBuildHasher>,
     remove_watches: &mut Vec<PathBuf>,
 ) {
     if watch_handles.contains_right(path) {
@@ -134,8 +140,8 @@ impl EventLoop {
             event_loop_rx,
             inotify: Some(inotify),
             event_handler,
-            watches: HashMap::new(),
-            watch_handles: BiHashMap::new(),
+            watches: HashMap::default(),
+            watch_handles: BiHashMap::default(),
             rename_event: None,
             follow_links,
         };
@@ -242,7 +248,7 @@ impl EventLoop {
             .expect("configuration channel disconnected");
     }
 
-    fn is_watched_path(watches: &HashMap<PathBuf, WatchMode>, path: &Path) -> bool {
+    fn is_watched_path(watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>, path: &Path) -> bool {
         if watches.contains_key(path) {
             return true;
         }

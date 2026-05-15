@@ -32,6 +32,7 @@ workspace = true
 
 [dependencies]
 rolldown-notify-types.workspace = true
+rustc-hash.workspace = true
 crossbeam-channel = { workspace = true, optional = true }
 flume = { workspace = true, optional = true }
 libc.workspace = true

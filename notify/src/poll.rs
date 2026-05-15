@@ -75,6 +75,7 @@ mod data {
         consolidating_path_trie::ConsolidatingPathTrie,
         event::{CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind},
     };
+    use rustc_hash::FxBuildHasher;
     use std::{
         cell::RefCell,
         collections::{HashMap, hash_map::RandomState},
@@ -157,24 +158,26 @@ mod data {
         }
     }
 
+    type SingleWatchHandlerMap = HashMap<PathBuf, /* recursive */ bool, FxBuildHasher>;
+
     #[derive(Debug)]
     struct WatchHandlers {
-        current: HashMap<PathBuf, /* recursive */ bool>,
-        next: HashMap<PathBuf, /* recursive */ bool>,
+        current: SingleWatchHandlerMap,
+        next: SingleWatchHandlerMap,
         is_stale: bool,
     }
 
     impl WatchHandlers {
         fn new() -> Self {
             Self {
-                current: HashMap::new(),
-                next: HashMap::new(),
+                current: HashMap::default(),
+                next: HashMap::default(),
                 is_stale: false,
             }
         }
 
         /// Recalculate from `watches`.
-        fn recalculate(&mut self, watches: &HashMap<PathBuf, WatchMode>) {
+        fn recalculate(&mut self, watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>) {
             self.next.clear();
             self.is_stale = true;
 
@@ -196,12 +199,7 @@ mod data {
             }
         }
 
-        fn use_handlers(
-            &mut self,
-        ) -> (
-            &HashMap<PathBuf, /* recursive */ bool>,
-            Option<HashMap<PathBuf, /* recursive */ bool>>,
-        ) {
+        fn use_handlers(&mut self) -> (&SingleWatchHandlerMap, Option<SingleWatchHandlerMap>) {
             if self.is_stale {
                 let old_next = std::mem::take(&mut self.next);
                 let old_current = std::mem::replace(&mut self.current, old_next);
@@ -218,9 +216,9 @@ mod data {
         follow_symlinks: bool,
 
         // current status part.
-        watches: HashMap<PathBuf, WatchMode>,
+        watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
         watch_handlers: WatchHandlers,
-        all_path_data: HashMap<PathBuf, PathData>,
+        all_path_data: HashMap<PathBuf, PathData, FxBuildHasher>,
     }
 
     impl WatchData {
@@ -228,9 +226,9 @@ mod data {
         pub fn new(follow_symlinks: bool) -> Self {
             Self {
                 follow_symlinks,
-                watches: HashMap::new(),
+                watches: HashMap::default(),
                 watch_handlers: WatchHandlers::new(),
-                all_path_data: HashMap::new(),
+                all_path_data: HashMap::default(),
             }
         }
 
@@ -333,7 +331,7 @@ mod data {
         /// This function may emit some IO Error events by `data_builder.emitter`.
         fn scan_all_path_data(
             data_builder: &DataBuilder,
-            watch_handlers: &HashMap<PathBuf, /* recursive */ bool>,
+            watch_handlers: &HashMap<PathBuf, /* recursive */ bool, FxBuildHasher>,
             follow_symlinks: bool,
         ) -> impl Iterator<Item = (PathBuf, PathData)> {
             tracing::trace!("rescanning");

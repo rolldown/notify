@@ -1,6 +1,7 @@
 use crate::FileIdCache;
 use file_id::{FileId, get_file_id};
 use notify::{RecursiveMode, WatchMode};
+use rustc_hash::FxBuildHasher;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -13,7 +14,7 @@ use walkdir::WalkDir;
 /// rename events in case the notification back-end doesn't emit rename cookies.
 #[derive(Debug, Clone, Default)]
 pub struct FileIdMap {
-    paths: HashMap<PathBuf, FileId>,
+    paths: HashMap<PathBuf, FileId, FxBuildHasher>,
 }
 
 impl FileIdMap {

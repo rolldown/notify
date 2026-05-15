@@ -16,10 +16,13 @@ pub(crate) struct BiHashMap<L, R, V, S = RandomState> {
 }
 
 impl<L, R, V> BiHashMap<L, R, V, RandomState> {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
+}
 
+impl<L, R, V, S: BuildHasher> BiHashMap<L, R, V, S> {
     #[cfg(test)]
     pub fn iter(&self) -> impl Iterator<Item = (&L, &R, &V)> {
         self.left.iter().map(|(l, (r, v))| (l, r, v))
