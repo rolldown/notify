@@ -19,6 +19,7 @@ use crate::{Config, Error, EventHandler, PathsMut, Result, Sender, WatchMode, Wa
 use crate::{TargetMode, event::*};
 use objc2_core_foundation as cf;
 use objc2_core_services as fs;
+use rustc_hash::FxBuildHasher;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, OsStr};
 use std::fmt;
@@ -68,7 +69,7 @@ pub struct FsEventWatcher {
     flags: fs::FSEventStreamCreateFlags,
     event_handler: Arc<Mutex<dyn EventHandler>>,
     runloop: Option<(cf::CFRetained<cf::CFRunLoop>, thread::JoinHandle<()>)>,
-    watches: HashMap<PathBuf, bool>,
+    watches: HashMap<PathBuf, bool, FxBuildHasher>,
 }
 
 impl fmt::Debug for FsEventWatcher {
@@ -275,7 +276,7 @@ fn translate_flags(flags: &StreamFlags, precise: bool, root_path_exists: bool) -
 
 struct StreamContextInfo {
     event_handler: Arc<Mutex<dyn EventHandler>>,
-    recursive_info: HashMap<PathBuf, bool>,
+    recursive_info: HashMap<PathBuf, bool, FxBuildHasher>,
 }
 
 // Free the context when the stream created by `FSEventStreamCreate` is released.
@@ -326,7 +327,7 @@ impl FsEventWatcher {
                 | fs::kFSEventStreamCreateFlagWatchRoot,
             event_handler,
             runloop: None,
-            watches: HashMap::new(),
+            watches: HashMap::default(),
         }
     }
 
@@ -750,7 +751,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<crate::Result<Event>>();
         let event_handler: Arc<Mutex<dyn EventHandler>> = Arc::new(Mutex::new(tx));
 
-        let mut recursive_info = HashMap::new();
+        let mut recursive_info = HashMap::default();
         recursive_info.insert(PathBuf::from("/tmp"), true);
 
         let context = Box::new(StreamContextInfo {
@@ -807,7 +808,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<crate::Result<Event>>();
         let event_handler: Arc<Mutex<dyn EventHandler>> = Arc::new(Mutex::new(tx));
 
-        let mut recursive_info = HashMap::new();
+        let mut recursive_info = HashMap::default();
         recursive_info.insert(PathBuf::from("/tmp"), true);
 
         let context = Box::new(StreamContextInfo {

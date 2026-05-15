@@ -55,6 +55,7 @@
 //! # Caveats
 //!
 //! As all file events are sourced from notify, the [known problems](https://docs.rs/notify/latest/notify/#known-problems) section applies here too.
+use rustc_hash::FxBuildHasher;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -217,7 +218,7 @@ enum InnerEvent {
 
 struct DebounceDataInner {
     /// Path -> Event data
-    event_map: HashMap<PathBuf, EventData>,
+    event_map: HashMap<PathBuf, EventData, FxBuildHasher>,
     /// timeout used to compare all events against, config
     timeout: Duration,
     /// Whether to time events exactly, or batch multiple together.
@@ -249,7 +250,7 @@ impl DebounceDataInner {
     /// Updates the internal tracker for the next tick
     pub fn debounced_events(&mut self) -> Vec<DebouncedEvent> {
         let mut events_expired = Vec::with_capacity(self.event_map.len());
-        let mut data_back = HashMap::with_capacity(self.event_map.len());
+        let mut data_back = HashMap::with_capacity_and_hasher(self.event_map.len(), FxBuildHasher);
         // TODO: perfect fit for drain_filter https://github.com/rust-lang/rust/issues/59618
         // reset deadline
         self.debounce_deadline = None;
