@@ -181,7 +181,7 @@ mod data {
             self.next.clear();
             self.is_stale = true;
 
-            let mut trie = ConsolidatingPathTrie::new(false);
+            let mut trie = ConsolidatingPathTrie::new(false, 0);
             for (path, mode) in watches {
                 if mode.recursive_mode == crate::RecursiveMode::Recursive {
                     trie.insert(path);
