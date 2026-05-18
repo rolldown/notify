@@ -79,8 +79,8 @@ map_unwrap_or = "allow"
 [workspace.dependencies]
 bitflags = "2.7.0"
 crossbeam-channel = "0.5.0"
-criterion = "0.7.0"
-flume = "0.11.1"
+criterion = "0.8.0"
+flume = "0.12.0"
 deser-hjson = "2.2.4"
 tracing-subscriber = "0.3.20"
 rolldown-file-id = { version = "0.2.7", path = "file-id" }
