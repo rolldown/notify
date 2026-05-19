@@ -212,6 +212,51 @@ fn bench_windows_paths_mut(c: &mut Criterion) {
     group.finish();
 }
 
+/// Workload matching the issue #62 motivating shape: many sibling subdirectory
+/// watches under a shared parent, none of them on the parent itself. This is
+/// what the `ConsolidatingPathTrie` is designed to optimize.
+#[cfg(target_os = "windows")]
+fn create_sibling_subdirs(dir: &std::path::Path, count: usize) -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(count);
+    for i in 0..count {
+        let sub = dir.join(format!("c{i:04}"));
+        std::fs::create_dir(&sub).expect("Failed to create subdirectory");
+        paths.push(sub);
+    }
+    paths
+}
+
+#[cfg(target_os = "windows")]
+fn bench_windows_sibling_subdirs(c: &mut Criterion) {
+    use notify::ReadDirectoryChangesWatcher;
+
+    let mut group = c.benchmark_group("windows_sibling_subdirs");
+
+    for count in [10, 50, 100, 500] {
+        for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
+            let mode_str = match mode {
+                RecursiveMode::Recursive => "recursive",
+                RecursiveMode::NonRecursive => "nonrecursive",
+            };
+
+            group.bench_with_input(BenchmarkId::new(mode_str, count), &count, |b, &count| {
+                let temp_dir = TempDir::new().expect("Failed to create temp dir");
+                let paths = create_sibling_subdirs(temp_dir.path(), count);
+
+                b.iter(|| {
+                    let mut watcher =
+                        ReadDirectoryChangesWatcher::new(move |_res| {}, notify::Config::default())
+                            .expect("Failed to create watcher");
+
+                    bench_paths_mut(&mut watcher, black_box(&paths), mode);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
 // Poll benchmarks (cross-platform)
 fn bench_poll_paths_mut(c: &mut Criterion) {
     use notify::PollWatcher;
@@ -271,7 +316,12 @@ criterion_group!(benches, bench_kqueue_paths_mut, bench_poll_paths_mut);
 criterion_group!(benches, bench_kqueue_paths_mut, bench_poll_paths_mut);
 
 #[cfg(target_os = "windows")]
-criterion_group!(benches, bench_windows_paths_mut, bench_poll_paths_mut);
+criterion_group!(
+    benches,
+    bench_windows_paths_mut,
+    bench_windows_sibling_subdirs,
+    bench_poll_paths_mut
+);
 
 #[cfg(not(any(
     target_os = "linux",
