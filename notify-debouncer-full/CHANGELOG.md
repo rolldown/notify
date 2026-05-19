@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.7.6...rolldown-notify-debouncer-full-v0.7.7) - 2026-05-19
+
+### Other
+
+- Optimize debouncer.watch() lookup time ([#913](https://github.com/rolldown/notify/pull/913))
+- Emit `remove` events even if a file was created and then removed ([#902](https://github.com/rolldown/notify/pull/902))
+- *(debouncer-full)* speed up hashing by rustc-hash ([#896](https://github.com/rolldown/notify/pull/896))
+- *(notify-debouncer-full)* avoid rebuilding queues during flush ([#883](https://github.com/rolldown/notify/pull/883))
+- *(deps)* update dependency rust to v1.95.0 ([#83](https://github.com/rolldown/notify/pull/83))
+
 ## [0.7.6](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.7.5...rolldown-notify-debouncer-full-v0.7.6) - 2026-03-13
 
 ### Other
