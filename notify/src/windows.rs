@@ -6,7 +6,8 @@
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
 use crate::{
-    BoundSender, Config, ErrorKind, Receiver, Sender, TargetMode, WatchMode, bounded, unbounded,
+    BoundSender, Config, ErrorKind, PathsMut, Receiver, Sender, TargetMode, WatchMode, bounded,
+    unbounded,
 };
 use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
 use crate::{WatcherKind, event::*};
@@ -106,10 +107,16 @@ enum Action {
     Watch(PathBuf, WatchMode),
     Unwatch(PathBuf),
     UnwatchRaw(PathBuf),
+    StageAndCommit(Vec<StagedChange>, BoundSender<Result<()>>),
     Stop,
     Configure(Config, BoundSender<Result<bool>>),
     #[cfg(test)]
     GetWatchHandles(BoundSender<HashSet<PathBuf>>),
+}
+
+enum StagedChange {
+    Add(PathBuf, WatchMode),
+    Remove(PathBuf),
 }
 
 struct WatchState {
@@ -176,6 +183,12 @@ impl ReadDirectoryChangesServer {
                     }
                     Action::Unwatch(path) => self.remove_watch(&path),
                     Action::UnwatchRaw(path) => self.remove_watch_raw(&path),
+                    Action::StageAndCommit(staged, tx) => {
+                        let res = self.apply_staged(staged);
+                        if let Err(e) = tx.send(res) {
+                            tracing::error!(?e, "failed to send StageAndCommit result");
+                        }
+                    }
                     Action::Stop => {
                         stopped = true;
                         for (ws, _) in self.watch_handles.values() {
@@ -397,6 +410,30 @@ impl ReadDirectoryChangesServer {
     fn configure_raw_mode(_config: Config, tx: &BoundSender<Result<bool>>) {
         tx.send(Ok(false))
             .expect("configuration channel disconnect");
+    }
+
+    /// Apply a batch of staged changes from [`WindowsPathsMut::commit`] in
+    /// order. Each change reuses the existing per-call `add_watch` /
+    /// `remove_watch` paths; the only saving over the default `PathsMut` is
+    /// that the whole batch crosses the action channel as a single message
+    /// and is acked once instead of N times.
+    fn apply_staged(&mut self, staged: Vec<StagedChange>) -> Result<()> {
+        let mut first_error: Option<Error> = None;
+        for change in staged {
+            let res = match change {
+                StagedChange::Add(path, mode) => self.add_watch(path, mode).map(|_| ()),
+                StagedChange::Remove(path) => {
+                    self.remove_watch(&path);
+                    Ok(())
+                }
+            };
+            if let Err(e) = res
+                && first_error.is_none()
+            {
+                first_error = Some(e);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -757,6 +794,65 @@ impl ReadDirectoryChangesWatcher {
     }
 }
 
+/// Batched [`PathsMut`] implementation for the Windows backend.
+///
+/// `add` and `remove` only push entries onto a local `Vec`; nothing crosses
+/// the server-thread channel until `commit`, at which point the staged
+/// changes are sent as a single message and processed in order. This avoids
+/// the per-call channel round-trip that the default `PathsMut` impl from
+/// `lib.rs` would incur if a caller adds many paths through one watcher.
+///
+/// On error the first error is returned and remaining staged changes after
+/// the failing one may still be applied (the server processes the batch in
+/// order and continues past errors so the watcher state stays consistent).
+struct WindowsPathsMut<'a> {
+    watcher: &'a mut ReadDirectoryChangesWatcher,
+    staged: Vec<StagedChange>,
+}
+
+impl WindowsPathsMut<'_> {
+    fn absolutize(path: &Path) -> Result<PathBuf> {
+        if path.is_absolute() {
+            Ok(path.to_owned())
+        } else {
+            let cwd = env::current_dir().map_err(Error::io)?;
+            Ok(cwd.join(path))
+        }
+    }
+}
+
+impl PathsMut for WindowsPathsMut<'_> {
+    #[tracing::instrument(level = "debug", skip(self))]
+    fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
+        let pb = Self::absolutize(path)?;
+        self.staged.push(StagedChange::Add(pb, watch_mode));
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    fn remove(&mut self, path: &Path) -> Result<()> {
+        let pb = Self::absolutize(path)?;
+        self.staged.push(StagedChange::Remove(pb));
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    fn commit(self: Box<Self>) -> Result<()> {
+        let WindowsPathsMut { watcher, staged } = *self;
+        if staged.is_empty() {
+            return Ok(());
+        }
+        let (tx, rx) = bounded(1);
+        watcher
+            .tx
+            .send(Action::StageAndCommit(staged, tx))
+            .map_err(|_| Error::generic("Error sending to internal channel"))?;
+        watcher.wakeup_server();
+        rx.recv()
+            .map_err(|_| Error::generic("Error receiving from commit channel"))?
+    }
+}
+
 impl Watcher for ReadDirectoryChangesWatcher {
     #[tracing::instrument(level = "debug", skip(event_handler))]
     #[expect(clippy::used_underscore_binding)]
@@ -773,6 +869,13 @@ impl Watcher for ReadDirectoryChangesWatcher {
     #[tracing::instrument(level = "debug", skip(self))]
     fn unwatch(&mut self, path: &Path) -> Result<()> {
         self.unwatch_inner(path)
+    }
+
+    fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
+        Box::new(WindowsPathsMut {
+            watcher: self,
+            staged: Vec::new(),
+        })
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
