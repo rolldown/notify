@@ -2,6 +2,10 @@
 
 use std::time::Duration;
 
+/// Default maximum number of paths to pass to FSEvents, chosen to stay
+/// well under the macOS default file descriptor soft limit (256).
+pub const DEFAULT_MAX_FSEVENT_PATHS: usize = 128;
+
 /// Indicates how the path should be watched
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct WatchMode {
@@ -128,6 +132,9 @@ pub struct Config {
     compare_contents: bool,
 
     follow_symlinks: bool,
+
+    /// See [Config::with_max_fsevent_paths]
+    max_fsevent_paths: usize,
 }
 
 impl Config {
@@ -203,6 +210,31 @@ impl Config {
     pub fn follow_symlinks(&self) -> bool {
         self.follow_symlinks
     }
+
+    /// For the [`FsEventWatcher`](crate::FsEventWatcher) backend.
+    ///
+    /// Maximum number of paths to pass to FSEvents. When the number of
+    /// watched paths exceeds this limit, the watcher automatically watches
+    /// parent directories instead of individual paths to reduce file
+    /// descriptor usage.
+    ///
+    /// The default is [`DEFAULT_MAX_FSEVENT_PATHS`]. Set to `0` to disable
+    /// consolidation.
+    ///
+    /// This can't be changed during runtime.
+    #[must_use]
+    pub fn with_max_fsevent_paths(mut self, max_paths: usize) -> Self {
+        self.max_fsevent_paths = max_paths;
+        self
+    }
+
+    /// Returns current setting.
+    ///
+    /// `0` means consolidation is disabled.
+    #[must_use]
+    pub fn max_fsevent_paths(&self) -> usize {
+        self.max_fsevent_paths
+    }
 }
 
 impl Default for Config {
@@ -211,6 +243,7 @@ impl Default for Config {
             poll_interval: Some(Duration::from_secs(30)),
             compare_contents: false,
             follow_symlinks: true,
+            max_fsevent_paths: DEFAULT_MAX_FSEVENT_PATHS,
         }
     }
 }

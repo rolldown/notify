@@ -70,6 +70,7 @@ pub struct FsEventWatcher {
     event_handler: Arc<Mutex<dyn EventHandler>>,
     runloop: Option<(cf::CFRetained<cf::CFRunLoop>, thread::JoinHandle<()>)>,
     watches: HashMap<PathBuf, bool, FxBuildHasher>,
+    max_fsevent_paths: usize,
 }
 
 impl fmt::Debug for FsEventWatcher {
@@ -353,7 +354,10 @@ impl PathsMut for FsEventPathsMut<'_> {
 }
 
 impl FsEventWatcher {
-    fn from_event_handler(event_handler: Arc<Mutex<dyn EventHandler>>) -> Self {
+    fn from_event_handler(
+        event_handler: Arc<Mutex<dyn EventHandler>>,
+        max_fsevent_paths: usize,
+    ) -> Self {
         FsEventWatcher {
             paths: cf::CFMutableArray::empty(),
             since_when: fs::kFSEventStreamEventIdSinceNow,
@@ -364,6 +368,7 @@ impl FsEventWatcher {
             event_handler,
             runloop: None,
             watches: HashMap::default(),
+            max_fsevent_paths,
         }
     }
 
@@ -434,7 +439,7 @@ impl FsEventWatcher {
 
     fn update_paths_based_on_watches(&mut self) {
         let paths_to_watch = {
-            let mut trie = ConsolidatingPathTrie::new(true);
+            let mut trie = ConsolidatingPathTrie::new(true, self.max_fsevent_paths);
             for path in self.watches.keys() {
                 trie.insert(path.clone());
             }
@@ -695,11 +700,11 @@ unsafe fn callback_impl(
 impl Watcher for FsEventWatcher {
     /// Create a new watcher.
     #[tracing::instrument(level = "debug", skip(event_handler))]
-    #[expect(clippy::used_underscore_binding)]
-    fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
-        Ok(Self::from_event_handler(Arc::new(Mutex::new(
-            event_handler,
-        ))))
+    fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
+        Ok(Self::from_event_handler(
+            Arc::new(Mutex::new(event_handler)),
+            config.max_fsevent_paths(),
+        ))
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
