@@ -288,17 +288,24 @@ impl ReadDirectoryChangesServer {
     }
 
     fn apply_staged(&mut self, staged: Vec<StagedChange>) -> Result<()> {
+        // Pass 1: run consolidation lexically on each staged path's direct
+        // parent dir (no metadata yet). Open that consolidated set so every
+        // staged path has *some* covering watch installed before its
+        // metadata is read. This collapses what would otherwise be N
+        // per-path pre-opens into a single consolidated open, avoiding the
+        // close-and-reopen cycle that the previous flow paid when
+        // consolidation later merged the per-path pre-opens away.
+        self.pre_open_consolidated(&staged)?;
+
+        // Pass 2: resolve metadata for each staged Add now that watches are
+        // armed, and apply Removes.
         let mut first_error: Option<Error> = None;
         for change in staged {
             let res = match change {
                 StagedChange::Add(path, mode) => {
                     let merged = self.merge_user_watch_mode(&path, mode);
-                    // Pre-open `tracked_parent` before metadata to avoid the
-                    // Windows quirk documented on `add_watch`.
-                    self.pre_open_tracked_parent(&path, merged).and_then(|()| {
-                        resolve_user_watch(&path, merged).map(|uw| {
-                            self.watches.borrow_mut().insert(path, uw);
-                        })
+                    resolve_user_watch(&path, merged).map(|uw| {
+                        self.watches.borrow_mut().insert(path, uw);
                     })
                 }
                 StagedChange::Remove(path) => {
@@ -312,8 +319,10 @@ impl ReadDirectoryChangesServer {
                 first_error = Some(e);
             }
         }
-        // Even if some staged changes failed to resolve, apply the successful ones
-        // so the watcher state remains consistent with `self.watches`.
+        // Pass 3: final rebuild against the actual primaries. The
+        // conservatively-opened handles from pass 1 are either left in place
+        // (when they coincide with the final target) or rewritten by the
+        // normal diff in `rebuild_watch_handles`.
         if let Err(e) = self.rebuild_watch_handles()
             && first_error.is_none()
         {
@@ -323,6 +332,41 @@ impl ReadDirectoryChangesServer {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Phase 1 of the batched commit: open a single consolidated set of
+    /// "direct parent" dirs that lexically cover every TrackPath staged
+    /// Add. This satisfies the Windows metadata quirk (parent must be
+    /// watched before `path.metadata()`) in a way that doesn't waste opens
+    /// when consolidation later collapses everything into a higher
+    /// ancestor.
+    ///
+    /// The recursive flag for each conservative target is `true` whenever
+    /// some staged path's direct parent is a strict descendant of that
+    /// target (i.e., consolidation collapsed it from below). Otherwise
+    /// non-recursive — matching the per-call `pre_open_tracked_parent`.
+    fn pre_open_consolidated(&mut self, staged: &[StagedChange]) -> Result<()> {
+        let mut trie = ConsolidatingPathTrie::new(true, 0);
+        let mut staged_parents: Vec<PathBuf> = Vec::new();
+        for change in staged {
+            if let StagedChange::Add(path, mode) = change
+                && mode.target_mode == TargetMode::TrackPath
+                && let Some(parent) = path.parent()
+            {
+                trie.insert(parent);
+                staged_parents.push(parent.to_path_buf());
+            }
+        }
+        for target in trie.values() {
+            if self.watch_handles.contains_key(&target) {
+                continue;
+            }
+            let recursive = staged_parents
+                .iter()
+                .any(|p| p != &target && p.starts_with(&target));
+            self.add_watch_raw(target, recursive, false)?;
+        }
+        Ok(())
     }
 
     /// Build the desired set of OS-level dirs from `self.watches`, run consolidation
