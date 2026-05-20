@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.4.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.3.1...rolldown-notify-v10.4.0) - 2026-05-20
+
+### Added
+
+- consolidate paths further more for fsevents backend if needed ([#91](https://github.com/rolldown/notify/pull/91))
+
+### Other
+
+- consolidate watch paths via `ConsolidatingPathTrie` on Windows ([#93](https://github.com/rolldown/notify/pull/93))
+- batch path changes via `PathsMut` on Windows ([#94](https://github.com/rolldown/notify/pull/94))
+
 ## [10.3.1](https://github.com/rolldown/notify/compare/rolldown-notify-v10.3.0...rolldown-notify-v10.3.1) - 2026-05-19
 
 ### Other
