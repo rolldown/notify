@@ -5,11 +5,12 @@
 //!
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
+use crate::consolidating_path_trie::ConsolidatingPathTrie;
 use crate::{
     BoundSender, Config, ErrorKind, PathsMut, Receiver, Sender, TargetMode, WatchMode, bounded,
     unbounded,
 };
-use crate::{Error, EventHandler, RecursiveMode, Result, Watcher};
+use crate::{Error, EventHandler, Result, Watcher};
 use crate::{WatcherKind, event::*};
 use rustc_hash::FxBuildHasher;
 use std::alloc;
@@ -76,6 +77,18 @@ fn normalize_path_separators(path: PathBuf) -> PathBuf {
     PathBuf::from(OsString::from_wide(&encoded_path))
 }
 
+/// The resolved OS-level coverage for a user watch request.
+#[derive(Debug, Clone)]
+struct ResolvedWatch {
+    /// The directory we'd open with `CreateFileW` to receive content events
+    /// for this watch, plus whether the user asked for a recursive subtree.
+    primary: Option<(PathBuf, bool)>,
+    /// Whether the watch also needs an auxiliary watch on the user path's
+    /// direct parent so we can detect rename or delete events for the watched
+    /// path itself.
+    needs_tracked_parent: bool,
+}
+
 #[derive(Clone)]
 struct ReadData {
     dir: PathBuf, // directory that is being watched
@@ -129,7 +142,12 @@ struct ReadDirectoryChangesServer {
     rx: Receiver<Action>,
     event_handler: Arc<Mutex<dyn EventHandler>>,
     cmd_tx: Sender<Result<PathBuf>>,
+    /// The raw watch request registered by the user, keyed by user path.
     watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
+    /// Resolved OS-level coverage for each entry in `watches`, keyed by the
+    /// same user path. Resolution needs a `metadata()` call, so it is cached
+    /// here rather than recomputed on every rebuild.
+    resolved_watches: HashMap<PathBuf, ResolvedWatch, FxBuildHasher>,
     watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool), FxBuildHasher>,
     wakeup_sem: HANDLE,
 }
@@ -155,6 +173,7 @@ impl ReadDirectoryChangesServer {
                         event_handler,
                         cmd_tx,
                         watches: Rc::new(RefCell::new(HashMap::default())),
+                        resolved_watches: HashMap::default(),
                         watch_handles: HashMap::default(),
                         wakeup_sem,
                     };
@@ -225,84 +244,133 @@ impl ReadDirectoryChangesServer {
 
     #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<PathBuf> {
-        let existing_watch_mode = self.watches.borrow().get(&path).copied();
-        if let Some(existing) = existing_watch_mode {
-            let need_upgrade_to_recursive = match existing.recursive_mode {
-                RecursiveMode::Recursive => false,
-                RecursiveMode::NonRecursive => {
-                    watch_mode.recursive_mode == RecursiveMode::Recursive
+        self.add_watch_internal(path.clone(), watch_mode)?;
+        self.rebuild_watch_handles()?;
+        Ok(path)
+    }
+
+    /// Register a single user watch: merge `mode` with any existing entry for
+    /// `path` (so repeated watches of the same path only ever upgrade
+    /// coverage), resolve it, and record both the raw request in `watches` and
+    /// the resolved coverage in `resolved_watches`.
+    ///
+    /// Watch handles are left untouched; the caller drives `rebuild_watch_handles`.
+    fn add_watch_internal(&mut self, path: PathBuf, mode: WatchMode) -> Result<()> {
+        let merged = match self.watches.borrow().get(&path) {
+            Some(existing) => {
+                let mut merged = *existing;
+                merged.upgrade_with(mode);
+                merged
+            }
+            None => mode,
+        };
+        let resolved = resolve_user_watch(&path, merged)?;
+        self.watches.borrow_mut().insert(path.clone(), merged);
+        self.resolved_watches.insert(path, resolved);
+        Ok(())
+    }
+
+    fn apply_staged(&mut self, staged: Vec<StagedChange>) -> Result<()> {
+        tracing::trace!(change_count = staged.len(), "applying staged watch changes");
+        let mut first_error: Option<Error> = None;
+        for change in staged {
+            let res = match change {
+                StagedChange::Add(path, mode) => self.add_watch_internal(path, mode),
+                StagedChange::Remove(path) => {
+                    self.remove_watch_internal(&path);
+                    Ok(())
                 }
             };
-            let need_to_watch_parent_newly = match existing.target_mode {
-                TargetMode::TrackPath => false,
-                TargetMode::NoTrack => watch_mode.target_mode == TargetMode::TrackPath,
-            };
-            tracing::trace!(
-                ?need_upgrade_to_recursive,
-                ?need_to_watch_parent_newly,
-                "upgrading existing watch for path: {}",
-                path.display()
-            );
-            if need_to_watch_parent_newly && let Some(parent) = path.parent() {
-                self.add_watch_raw(parent.to_path_buf(), false, false)?;
+            if let Err(e) = res
+                && first_error.is_none()
+            {
+                first_error = Some(e);
             }
-            if !need_upgrade_to_recursive {
-                return Ok(path);
-            }
-        } else if watch_mode.target_mode == TargetMode::TrackPath
-            && let Some(parent) = path.parent()
+        }
+        if let Err(e) = self.rebuild_watch_handles()
+            && first_error.is_none()
         {
-            self.add_watch_raw(parent.to_path_buf(), false, false)?;
+            first_error = Some(e);
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Converge the open OS-level watch handles with the current set of user
+    /// watches.
+    fn rebuild_watch_handles(&mut self) -> Result<()> {
+        // Drop resolved entries whose user watch is gone.
+        // This is needed because the event thread can remove a `NoTrack` entry
+        // from it directly (see `handle_event`) without touching `resolved_watches`.
+        {
+            let watches = self.watches.borrow();
+            self.resolved_watches
+                .retain(|path, _| watches.contains_key(path));
         }
 
-        let metadata = match path.metadata().map_err(Error::io_watch) {
-            Ok(meta) => {
-                // path must be either a file or directory
-                if !meta.is_dir() && !meta.is_file() {
-                    return Err(Error::generic(
-                        "Input watch path is neither a file nor a directory.",
-                    )
-                    .add_path(path));
-                }
-                meta
+        // Build `target`: the desired set of OS-level dirs to watch and their
+        // recursive flags. It is the consolidated primary dir requests, plus a
+        // non-recursive watch on the tracked parent of any watch that needs one.
+        let mut trie = ConsolidatingPathTrie::new(true, 0);
+        for resolved in self.resolved_watches.values() {
+            if let Some((dir, _)) = &resolved.primary {
+                trie.insert(dir);
             }
-            Err(err) => {
-                if watch_mode.target_mode == TargetMode::TrackPath
-                    && matches!(err.kind, ErrorKind::PathNotFound)
-                {
-                    self.watches.borrow_mut().insert(path.clone(), watch_mode);
-                    return Ok(path);
-                }
-                return Err(err);
+        }
+        let mut target: HashMap<PathBuf, bool, FxBuildHasher> = trie
+            .values()
+            .into_iter()
+            .map(|p| {
+                let recursive = compute_recursive_flag(&p, &self.resolved_watches);
+                (p, recursive)
+            })
+            .collect();
+        for (path, resolved) in &self.resolved_watches {
+            if resolved.needs_tracked_parent
+                && let Some(parent) = path.parent()
+                && !target.contains_key(parent)
+            {
+                target.insert(parent.to_path_buf(), false);
             }
-        };
+        }
+        tracing::trace!(desired = ?target, "rebuilding watch handles");
 
-        let (watching_file, dir_target) = {
-            if metadata.is_dir() {
-                (false, path.clone())
-            } else {
-                // emulate file watching by watching the parent directory
-                (true, path.parent().unwrap().to_path_buf())
+        let to_remove: Vec<PathBuf> = self
+            .watch_handles
+            .iter()
+            .filter(|(p, (_, is_rec))| target.get(*p).is_none_or(|t| t != is_rec))
+            .map(|(p, _)| p.clone())
+            .collect();
+        if !to_remove.is_empty() {
+            tracing::trace!(
+                ?to_remove,
+                "closing watch handles that are no longer needed"
+            );
+        }
+        for p in to_remove {
+            if let Some((ws, _)) = self.watch_handles.remove(&p) {
+                stop_watch(&ws);
             }
-        };
+        }
 
-        self.add_watch_raw(
-            dir_target,
-            watch_mode.recursive_mode.is_recursive(),
-            watching_file,
-        )?;
-
-        let upgraded_watch_mode = if let Some(mut existing) = existing_watch_mode {
-            existing.upgrade_with(watch_mode);
-            existing
-        } else {
-            watch_mode
-        };
-        self.watches
-            .borrow_mut()
-            .insert(path.clone(), upgraded_watch_mode);
-
-        Ok(path)
+        let to_open: Vec<(PathBuf, bool)> = target
+            .into_iter()
+            .filter(|(p, _)| !self.watch_handles.contains_key(p))
+            .collect();
+        let mut first_error: Option<Error> = None;
+        for (path, is_recursive) in to_open {
+            if let Err(e) = self.add_watch_raw(path, is_recursive, false)
+                && first_error.is_none()
+            {
+                first_error = Some(e);
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -379,30 +447,31 @@ impl ReadDirectoryChangesServer {
         Ok(())
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
-    fn remove_watch(&mut self, path: &Path) {
-        if self.watches.borrow_mut().remove(path).is_some() {
-            self.remove_watch_raw(path);
-        }
+    /// Remove a single user watch from `watches` and `resolved_watches`,
+    /// returning whether an entry was present. Watch handles are left
+    /// untouched; the caller drives `rebuild_watch_handles`.
+    fn remove_watch_internal(&mut self, path: &Path) -> bool {
+        let removed = self.watches.borrow_mut().remove(path).is_some();
+        self.resolved_watches.remove(path);
+        removed
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
+    fn remove_watch(&mut self, path: &Path) {
+        if self.remove_watch_internal(path)
+            && let Err(e) = self.rebuild_watch_handles()
+        {
+            tracing::error!(?e, "failed to rebuild watch handles after remove_watch");
+        }
+    }
+
+    /// Drop a watch handle out-of-band when the OS reports that the directory is
+    /// gone (or some other error invalidated it). The handle entry is purged
+    /// without consulting `self.watches`, since the corresponding user watch
+    /// may still be present and will be re-opened on the next rebuild.
+    #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch_raw(&mut self, path: &Path) {
         if let Some((ws, _)) = self.watch_handles.remove(path) {
-            stop_watch(&ws);
-        } else if let Some(parent_path) = path.parent()
-            && self.watches.borrow().get(parent_path).is_none()
-            && self
-                .watches
-                .borrow()
-                .keys()
-                .filter(|p| p.starts_with(parent_path))
-                .count()
-                == 0
-            && let Some((ws, _)) = self.watch_handles.remove(parent_path)
-        {
-            // if the parent path is not watched, the watch handle is used for the files under it
-            // if no files under it are watched anymore, we can stop the watch on the parent path
             stop_watch(&ws);
         }
     }
@@ -411,30 +480,75 @@ impl ReadDirectoryChangesServer {
         tx.send(Ok(false))
             .expect("configuration channel disconnect");
     }
+}
 
-    /// Apply a batch of staged changes from [`WindowsPathsMut::commit`] in
-    /// order. Each change reuses the existing per-call `add_watch` /
-    /// `remove_watch` paths; the only saving over the default `PathsMut` is
-    /// that the whole batch crosses the action channel as a single message
-    /// and is acked once instead of N times.
-    fn apply_staged(&mut self, staged: Vec<StagedChange>) -> Result<()> {
-        let mut first_error: Option<Error> = None;
-        for change in staged {
-            let res = match change {
-                StagedChange::Add(path, mode) => self.add_watch(path, mode).map(|_| ()),
-                StagedChange::Remove(path) => {
-                    self.remove_watch(&path);
-                    Ok(())
-                }
-            };
-            if let Err(e) = res
-                && first_error.is_none()
-            {
-                first_error = Some(e);
+/// Resolve a user-supplied watch path + mode into a [`ResolvedWatch`] describing
+/// which OS-level directories we'd want to watch.
+fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<ResolvedWatch> {
+    let is_track_path = mode.target_mode == TargetMode::TrackPath;
+
+    // Note: reading metadata on a directory triggers a modify event
+    match path.metadata().map_err(Error::io_watch) {
+        Ok(meta) => {
+            if meta.is_dir() {
+                Ok(ResolvedWatch {
+                    primary: Some((path.to_path_buf(), mode.recursive_mode.is_recursive())),
+                    needs_tracked_parent: is_track_path,
+                })
+            } else if meta.is_file() {
+                let parent = path.parent().unwrap_or(path).to_path_buf();
+                Ok(ResolvedWatch {
+                    primary: Some((parent, mode.recursive_mode.is_recursive())),
+                    // For files we always have to watch the parent directory anyway,
+                    // so the "tracked parent" rename-detection requirement is
+                    // already covered by `primary`; no separate entry needed.
+                    needs_tracked_parent: false,
+                })
+            } else {
+                Err(
+                    Error::generic("Input watch path is neither a file nor a directory.")
+                        .add_path(path.to_path_buf()),
+                )
             }
         }
-        first_error.map_or(Ok(()), Err)
+        Err(err) => {
+            // For TrackPath we keep the watch alive and rely on the parent dir
+            // to tell us when something appears at `path`.
+            if is_track_path && matches!(err.kind, ErrorKind::PathNotFound) {
+                Ok(ResolvedWatch {
+                    primary: None,
+                    needs_tracked_parent: true,
+                })
+            } else {
+                Err(err)
+            }
+        }
     }
+}
+
+/// Decide whether a consolidated OS-level watch on `target_path` must be opened
+/// with `bWatchSubtree=1`.
+fn compute_recursive_flag(
+    target_path: &Path,
+    resolved_watches: &HashMap<PathBuf, ResolvedWatch, FxBuildHasher>,
+) -> bool {
+    resolved_watches
+        .values()
+        .filter_map(|resolved| resolved.primary.as_ref())
+        .any(|(dir, is_rec)| (dir == target_path && *is_rec) || dir.starts_with(target_path))
+}
+
+/// Returns `true` if an event on `event_path` is covered by some user-registered
+/// watch.
+fn is_event_covered(
+    watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    event_path: &Path,
+) -> bool {
+    event_path.ancestors().enumerate().any(|(depth, ancestor)| {
+        watches
+            .get(ancestor)
+            .is_some_and(|mode| depth <= 1 || mode.recursive_mode.is_recursive())
+    })
 }
 
 fn stop_watch(ws: &WatchState) {
@@ -626,14 +740,7 @@ unsafe extern "system" fn handle_event(
                 .join(PathBuf::from(OsString::from_wide(encoded_path))),
         );
 
-        // if we are watching a single file, ignore the event unless the path is exactly
-        // the watched file
-        let skip = !(request
-            .data
-            .watches
-            .borrow()
-            .contains_key(&request.data.dir)
-            || request.data.watches.borrow().contains_key(&path));
+        let skip = !is_event_covered(&request.data.watches.borrow(), &path);
 
         tracing::trace!(
             handle_path = ?request.data.dir,
@@ -796,15 +903,12 @@ impl ReadDirectoryChangesWatcher {
 
 /// Batched [`PathsMut`] implementation for the Windows backend.
 ///
-/// `add` and `remove` only push entries onto a local `Vec`; nothing crosses
-/// the server-thread channel until `commit`, at which point the staged
-/// changes are sent as a single message and processed in order. This avoids
-/// the per-call channel round-trip that the default `PathsMut` impl from
-/// `lib.rs` would incur if a caller adds many paths through one watcher.
-///
-/// On error the first error is returned and remaining staged changes after
-/// the failing one may still be applied (the server processes the batch in
-/// order and continues past errors so the watcher state stays consistent).
+/// `add` and `remove` only stage the change in a local `Vec`; nothing crosses
+/// the channel until `commit`, at which point the server applies the staged
+/// changes in order and runs consolidation once. On error the first error
+/// is propagated and the remaining staged operations are skipped at staging
+/// time, but any operations that did make it into `self.watches` before the
+/// failure remain applied.
 struct WindowsPathsMut<'a> {
     watcher: &'a mut ReadDirectoryChangesWatcher,
     staged: Vec<StagedChange>,
@@ -1089,11 +1193,8 @@ pub mod tests {
         watcher.watch_recursively(&tmpdir);
         std::fs::write(&path, b"123").expect("write");
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
-            expected(&path).modify_any().multiple(),
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).modify_any().multiple()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
@@ -1113,11 +1214,8 @@ pub mod tests {
         watcher.watch_recursively(&tmpdir);
         file.set_permissions(permissions).expect("set_permissions");
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
-            expected(&path).modify_any(),
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).modify_any()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
@@ -1138,7 +1236,6 @@ pub mod tests {
         std::fs::rename(&path, &new_path).expect("rename");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
             expected(tmpdir.path()).modify_any(),
@@ -1234,11 +1331,8 @@ pub mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
-            expected(&file).remove_any(),
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&file).remove_any()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
@@ -1312,7 +1406,6 @@ pub mod tests {
         std::fs::rename(&overwriting_file, &overwritten_file).expect("rename");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
             expected(&overwriting_file).create_any(),
             expected(tmpdir.path()).modify_any(),
             expected(&overwriting_file).modify_any().multiple(),
@@ -1412,11 +1505,8 @@ pub mod tests {
         watcher.watch_recursively(&tmpdir);
         std::fs::set_permissions(&path, permissions).expect("set_permissions");
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
-            expected(&path).modify_any(),
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).modify_any()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
@@ -1437,7 +1527,6 @@ pub mod tests {
         std::fs::rename(&path, &new_path).expect("rename");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
             expected(tmpdir.path()).modify_any(),
@@ -1460,11 +1549,8 @@ pub mod tests {
         watcher.watch_recursively(&tmpdir);
         std::fs::remove_dir(&path).expect("remove");
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
-            expected(&path).remove_any(),
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).remove_any()])
+            .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf()])
@@ -1543,7 +1629,6 @@ pub mod tests {
         std::fs::rename(&new_path, &new_path2).expect("rename2");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
             expected(&path).rename_from(),
             expected(&new_path).rename_to(),
             expected(tmpdir.path()).modify_any(),
@@ -1573,7 +1658,7 @@ pub mod tests {
 
         std::fs::rename(&path, &new_path).expect("rename");
 
-        rx.wait_ordered_exact([expected(&subdir).modify_any(), expected(path).remove_any()])
+        rx.wait_ordered_exact([expected(path).remove_any()])
             .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
@@ -1599,7 +1684,6 @@ pub mod tests {
         std::fs::remove_file(&new_path).expect("remove");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
             expected(&file1).create_any(),
             expected(&file1).modify_any().multiple(),
             expected(tmpdir.path()).modify_any(),
@@ -1632,7 +1716,6 @@ pub mod tests {
         std::fs::rename(&new_path1, &new_path2).expect("rename2");
 
         rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
             expected(&path).rename_from(),
             expected(&new_path1).rename_to(),
             expected(tmpdir.path()).modify_any(),
@@ -1664,11 +1747,8 @@ pub mod tests {
         )
         .expect("set_time");
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_any(),
-            expected(&path).modify_any(),
-        ])
-        .ensure_no_tail();
+        rx.wait_ordered_exact([expected(&path).modify_any()])
+            .ensure_no_tail();
     }
 
     #[test]
@@ -1765,9 +1845,6 @@ pub mod tests {
         std::fs::File::create_new(&file).expect("create");
         std::fs::remove_file(&file).expect("delete");
 
-        rx.wait_ordered_exact([expected(&path).modify_any()])
-            .ensure_no_tail();
-
         watcher.watch_recursively(&path);
         std::fs::File::create_new(&file).expect("create");
 
@@ -1777,5 +1854,108 @@ pub mod tests {
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf(), path])
         );
+    }
+
+    /// Watching 10+ sibling subdirs collapses their OS-level watch into the
+    /// shared parent dir (the consolidation threshold defined on
+    /// [`ConsolidatingPathTrie`] is 10).
+    #[test]
+    fn consolidate_many_siblings() {
+        let tmpdir = testdir();
+        let (mut watcher, _rx) = watcher();
+
+        let mut subdirs = Vec::new();
+        for i in 0..10 {
+            let sub = tmpdir.path().join(format!("c{i}"));
+            std::fs::create_dir(&sub).expect("create_dir");
+            subdirs.push(sub);
+        }
+        let mut pm = watcher.watcher.paths_mut();
+        for sub in &subdirs {
+            pm.add(sub, WatchMode::recursive()).expect("paths_mut add");
+        }
+        pm.commit().expect("paths_mut commit");
+
+        // Consolidation collapses the 10 sibling watches to a single recursive
+        // watch on `tmpdir`. The 10 user-level `tracked_parent` entries all
+        // point at `tmpdir` and so are absorbed by the consolidated primary;
+        // no separate handle is opened on `tmpdir.parent_path_buf()`.
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.to_path_buf()])
+        );
+    }
+
+    /// After consolidation, events for files created inside each child dir are
+    /// still delivered through the consolidated parent watch.
+    #[test]
+    fn consolidate_delivers_child_events() {
+        let tmpdir = testdir();
+        let (mut watcher, rx) = watcher();
+
+        let mut subdirs = Vec::new();
+        for i in 0..10 {
+            let sub = tmpdir.path().join(format!("c{i}"));
+            std::fs::create_dir(&sub).expect("create_dir");
+            subdirs.push(sub);
+        }
+        let mut pm = watcher.watcher.paths_mut();
+        for sub in &subdirs {
+            pm.add(sub, WatchMode::recursive()).expect("paths_mut add");
+        }
+        pm.commit().expect("paths_mut commit");
+
+        // Create a file inside one of the consolidated child dirs; the event
+        // must still arrive even though no OS handle sits directly on `c5`.
+        let file = subdirs[5].join("f");
+        std::fs::File::create_new(&file).expect("create");
+        rx.wait_ordered_exact([expected(&file).create_any()])
+            .ensure_no_tail();
+    }
+
+    /// Mixing recursive and non-recursive watches under a shared parent
+    /// consolidates them into a recursive parent watch. Events deep inside
+    /// the recursive child reach the user; events deeper than 1 level inside
+    /// a non-recursive child are filtered out.
+    #[test]
+    fn mixed_recursive_consolidates_to_recursive() {
+        let tmpdir = testdir();
+        let (mut watcher, rx) = watcher();
+
+        let mut subdirs = Vec::new();
+        for i in 0..10 {
+            let sub = tmpdir.path().join(format!("c{i}"));
+            std::fs::create_dir(&sub).expect("create_dir");
+            subdirs.push(sub);
+        }
+        let recursive_child = subdirs[0].clone();
+        let nonrecursive_child = subdirs[1].clone();
+        let deep_under_rec = recursive_child.join("deep");
+        std::fs::create_dir(&deep_under_rec).expect("create_dir");
+        let deep_under_nonrec = nonrecursive_child.join("deep");
+        std::fs::create_dir(&deep_under_nonrec).expect("create_dir");
+
+        let mut pm = watcher.watcher.paths_mut();
+        for (i, sub) in subdirs.iter().enumerate() {
+            let mode = if i == 0 {
+                WatchMode::recursive()
+            } else {
+                WatchMode::non_recursive()
+            };
+            pm.add(sub, mode).expect("paths_mut add");
+        }
+        pm.commit().expect("paths_mut commit");
+
+        // File 1: under the recursive child
+        let file_under_rec = deep_under_rec.join("f");
+        std::fs::File::create_new(&file_under_rec).expect("create");
+
+        // File 2: under the non-recursive child
+        let file_under_nonrec = deep_under_nonrec.join("f");
+        std::fs::File::create_new(&file_under_nonrec).expect("create");
+
+        // We expect the deep-recursive file event but NOT the deep-nonrec one.
+        rx.wait_ordered_exact([expected(&file_under_rec).create_any()])
+            .ensure_no_tail();
     }
 }
