@@ -77,17 +77,20 @@ fn normalize_path_separators(path: PathBuf) -> PathBuf {
     PathBuf::from(OsString::from_wide(&encoded_path))
 }
 
-/// A user-registered watch request, paired with its resolved OS-level coverage.
+/// The resolved OS-level coverage for a user watch request.
 ///
-/// `mode` preserves the user's intent. `primary` is the directory we'd open with
-/// `CreateFileW` to receive content events for this watch, plus whether the user
-/// asked for a recursive subtree. `tracked_parent` is an optional extra directory
-/// whose direct children include `primary` (or the user path itself, for
-/// nonexistent + [`TargetMode::TrackPath`]) — its watch lets us detect rename or
-/// delete events for the watched path itself.
+/// `primary` is the directory we'd open with `CreateFileW` to receive content
+/// events for this watch, plus whether the user asked for a recursive subtree.
+/// `tracked_parent` is an optional extra directory whose direct children
+/// include `primary` (or the user path itself, for a nonexistent path in
+/// [`TargetMode::TrackPath`]); its watch lets us detect rename or delete
+/// events for the watched path itself.
+///
+/// This is kept separate from `watches`, which stores only the user's raw
+/// [`WatchMode`] request. Resolution needs a `metadata()` call, so it is cached
+/// here instead of being recomputed on every rebuild.
 #[derive(Debug, Clone)]
-struct UserWatch {
-    mode: WatchMode,
+struct ResolvedWatch {
     primary: Option<(PathBuf, bool)>,
     tracked_parent: Option<PathBuf>,
 }
@@ -95,7 +98,7 @@ struct UserWatch {
 #[derive(Clone)]
 struct ReadData {
     dir: PathBuf, // directory that is being watched
-    watches: Rc<RefCell<HashMap<PathBuf, UserWatch, FxBuildHasher>>>,
+    watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
     complete_sem: HANDLE,
     is_recursive: bool,
 }
@@ -145,7 +148,12 @@ struct ReadDirectoryChangesServer {
     rx: Receiver<Action>,
     event_handler: Arc<Mutex<dyn EventHandler>>,
     cmd_tx: Sender<Result<PathBuf>>,
-    watches: Rc<RefCell<HashMap<PathBuf, UserWatch, FxBuildHasher>>>,
+    /// The raw watch request registered by the user, keyed by user path.
+    watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
+    /// Resolved OS-level coverage for each entry in `watches`, keyed by the
+    /// same user path. Resolution needs a `metadata()` call, so it is cached
+    /// here rather than recomputed on every rebuild.
+    resolved_watches: HashMap<PathBuf, ResolvedWatch, FxBuildHasher>,
     watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool), FxBuildHasher>,
     wakeup_sem: HANDLE,
 }
@@ -171,6 +179,7 @@ impl ReadDirectoryChangesServer {
                         event_handler,
                         cmd_tx,
                         watches: Rc::new(RefCell::new(HashMap::default())),
+                        resolved_watches: HashMap::default(),
                         watch_handles: HashMap::default(),
                         wakeup_sem,
                     };
@@ -250,8 +259,9 @@ impl ReadDirectoryChangesServer {
         // watch before resolving metadata, matching the order the previous
         // per-call code used.
         self.pre_open_tracked_parent(&path, merged_mode)?;
-        let user_watch = resolve_user_watch(&path, merged_mode)?;
-        self.watches.borrow_mut().insert(path.clone(), user_watch);
+        let resolved = resolve_user_watch(&path, merged_mode)?;
+        self.watches.borrow_mut().insert(path.clone(), merged_mode);
+        self.resolved_watches.insert(path.clone(), resolved);
         self.rebuild_watch_handles()?;
         Ok(path)
     }
@@ -279,7 +289,7 @@ impl ReadDirectoryChangesServer {
     fn merge_user_watch_mode(&self, path: &Path, watch_mode: WatchMode) -> WatchMode {
         match self.watches.borrow().get(path) {
             Some(existing) => {
-                let mut merged = existing.mode;
+                let mut merged = *existing;
                 merged.upgrade_with(watch_mode);
                 merged
             }
@@ -304,12 +314,14 @@ impl ReadDirectoryChangesServer {
             let res = match change {
                 StagedChange::Add(path, mode) => {
                     let merged = self.merge_user_watch_mode(&path, mode);
-                    resolve_user_watch(&path, merged).map(|uw| {
-                        self.watches.borrow_mut().insert(path, uw);
+                    resolve_user_watch(&path, merged).map(|resolved| {
+                        self.watches.borrow_mut().insert(path.clone(), merged);
+                        self.resolved_watches.insert(path, resolved);
                     })
                 }
                 StagedChange::Remove(path) => {
                     self.watches.borrow_mut().remove(&path);
+                    self.resolved_watches.remove(&path);
                     Ok(())
                 }
             };
@@ -369,52 +381,54 @@ impl ReadDirectoryChangesServer {
         Ok(())
     }
 
-    /// Build the desired set of OS-level dirs from `self.watches`, run consolidation
-    /// over the *primary* dir requests, and then layer in any [`UserWatch::tracked_parent`]
-    /// entries as auxiliary non-recursive watches if they aren't already covered.
-    /// Finally diff against `self.watch_handles` to converge open handles.
+    /// Build the desired set of OS-level dirs from `self.resolved_watches`, run
+    /// consolidation over the *primary* dir requests, and then layer in any
+    /// [`ResolvedWatch::tracked_parent`] entries as auxiliary non-recursive
+    /// watches if they aren't already covered. Finally diff against
+    /// `self.watch_handles` to converge open handles.
     ///
     /// `tracked_parent` is deliberately kept outside the consolidation trie:
     /// merging it with the primary would force the primary watch up to the parent
     /// and make it recursive, which floods the event filter with sibling events
     /// that the user never asked about.
     fn rebuild_watch_handles(&mut self) -> Result<()> {
-        // 1. Run consolidation over only the primary dir requests.
-        let mut trie = ConsolidatingPathTrie::new(true, 0);
+        // Drop resolved entries whose user watch is gone. `watches` is the
+        // source of truth for which watches are live; the event thread can
+        // remove a `NoTrack` entry from it directly (see `handle_event`)
+        // without touching `resolved_watches`.
         {
             let watches = self.watches.borrow();
-            for uw in watches.values() {
-                if let Some((dir, _)) = &uw.primary {
-                    trie.insert(dir);
-                }
+            self.resolved_watches
+                .retain(|path, _| watches.contains_key(path));
+        }
+
+        // 1. Run consolidation over only the primary dir requests.
+        let mut trie = ConsolidatingPathTrie::new(true, 0);
+        for resolved in self.resolved_watches.values() {
+            if let Some((dir, _)) = &resolved.primary {
+                trie.insert(dir);
             }
         }
         let primary_paths = trie.values();
 
         // 2. Compute desired recursive flag for each consolidated primary.
-        let mut target: HashMap<PathBuf, bool, FxBuildHasher> = {
-            let watches = self.watches.borrow();
-            primary_paths
-                .into_iter()
-                .map(|p| {
-                    let recursive = compute_recursive_flag(&p, &watches);
-                    (p, recursive)
-                })
-                .collect()
-        };
+        let mut target: HashMap<PathBuf, bool, FxBuildHasher> = primary_paths
+            .into_iter()
+            .map(|p| {
+                let recursive = compute_recursive_flag(&p, &self.resolved_watches);
+                (p, recursive)
+            })
+            .collect();
 
         // 3. Layer in tracked_parent entries. If the parent already appears in
         //    `target` (whether as a consolidated parent or a directly requested
         //    primary), the existing entry is sufficient for rename detection on
         //    direct children. Otherwise add it as a non-recursive auxiliary watch.
-        {
-            let watches = self.watches.borrow();
-            for uw in watches.values() {
-                if let Some(parent) = &uw.tracked_parent
-                    && !target.contains_key(parent)
-                {
-                    target.insert(parent.clone(), false);
-                }
+        for resolved in self.resolved_watches.values() {
+            if let Some(parent) = &resolved.tracked_parent
+                && !target.contains_key(parent)
+            {
+                target.insert(parent.clone(), false);
             }
         }
 
@@ -537,7 +551,9 @@ impl ReadDirectoryChangesServer {
 
     #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: &Path) {
-        if self.watches.borrow_mut().remove(path).is_some()
+        let removed = self.watches.borrow_mut().remove(path).is_some();
+        self.resolved_watches.remove(path);
+        if removed
             && let Err(e) = self.rebuild_watch_handles()
         {
             tracing::error!(?e, "failed to rebuild watch handles after remove_watch");
@@ -561,10 +577,10 @@ impl ReadDirectoryChangesServer {
     }
 }
 
-/// Resolve a user-supplied watch path + mode into a [`UserWatch`] describing
+/// Resolve a user-supplied watch path + mode into a [`ResolvedWatch`] describing
 /// which OS-level directories we'd want to watch. Mirrors the metadata + parent
 /// logic that the old per-call `add_watch` used to inline.
-fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<UserWatch> {
+fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<ResolvedWatch> {
     let tracked_parent_for_dir = if mode.target_mode == TargetMode::TrackPath {
         path.parent().map(Path::to_path_buf)
     } else {
@@ -574,15 +590,13 @@ fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<UserWatch> {
     match path.metadata().map_err(Error::io_watch) {
         Ok(meta) => {
             if meta.is_dir() {
-                Ok(UserWatch {
-                    mode,
+                Ok(ResolvedWatch {
                     primary: Some((path.to_path_buf(), mode.recursive_mode.is_recursive())),
                     tracked_parent: tracked_parent_for_dir,
                 })
             } else if meta.is_file() {
                 let parent = path.parent().unwrap_or(path).to_path_buf();
-                Ok(UserWatch {
-                    mode,
+                Ok(ResolvedWatch {
                     // For files we always have to watch the parent directory anyway,
                     // so the "tracked parent" rename-detection requirement is
                     // already covered by `primary`; no separate entry needed.
@@ -602,8 +616,7 @@ fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<UserWatch> {
             if mode.target_mode == TargetMode::TrackPath
                 && matches!(err.kind, ErrorKind::PathNotFound)
             {
-                Ok(UserWatch {
-                    mode,
+                Ok(ResolvedWatch {
                     primary: None,
                     tracked_parent: tracked_parent_for_dir,
                 })
@@ -620,10 +633,10 @@ fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<UserWatch> {
 /// visibility) or matches `target_path` with `Recursive` mode.
 fn compute_recursive_flag(
     target_path: &Path,
-    watches: &HashMap<PathBuf, UserWatch, FxBuildHasher>,
+    resolved_watches: &HashMap<PathBuf, ResolvedWatch, FxBuildHasher>,
 ) -> bool {
-    for uw in watches.values() {
-        let Some((dir, is_rec)) = &uw.primary else {
+    for resolved in resolved_watches.values() {
+        let Some((dir, is_rec)) = &resolved.primary else {
             continue;
         };
         if dir == target_path {
@@ -641,15 +654,15 @@ fn compute_recursive_flag(
 /// watch. Walks ancestors of `event_path`: any direct parent or self-match
 /// always counts; a deeper recursive ancestor also counts.
 fn is_event_covered(
-    watches: &HashMap<PathBuf, UserWatch, FxBuildHasher>,
+    watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
     event_path: &Path,
 ) -> bool {
     if watches.contains_key(event_path) {
         return true;
     }
     for (depth, ancestor) in event_path.ancestors().enumerate().skip(1) {
-        if let Some(uw) = watches.get(ancestor)
-            && (depth == 1 || uw.mode.recursive_mode.is_recursive())
+        if let Some(mode) = watches.get(ancestor)
+            && (depth == 1 || mode.recursive_mode.is_recursive())
         {
             return true;
         }
@@ -782,7 +795,7 @@ unsafe extern "system" fn handle_event(
                     .watches
                     .borrow()
                     .get(&dir)
-                    .is_some_and(|uw| uw.mode.target_mode == TargetMode::NoTrack)
+                    .is_some_and(|mode| mode.target_mode == TargetMode::NoTrack)
                 {
                     let ev = Event::new(EventKind::Remove(RemoveKind::Any)).add_path(dir);
                     event_handler(Ok(ev));
@@ -915,7 +928,7 @@ unsafe extern "system" fn handle_event(
                 .watches
                 .borrow()
                 .get(&path)
-                .is_some_and(|uw| uw.mode.target_mode == TargetMode::NoTrack)
+                .is_some_and(|mode| mode.target_mode == TargetMode::NoTrack)
         };
         if is_no_track {
             request.data.watches.borrow_mut().remove(&path);
