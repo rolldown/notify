@@ -40,6 +40,17 @@ fn create_temp_files(dir: &std::path::Path, count: usize) -> Vec<PathBuf> {
     paths
 }
 
+/// Helper function to create N sibling subdirectories under a shared parent
+fn create_sibling_subdirs(dir: &std::path::Path, count: usize) -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(count);
+    for i in 0..count {
+        let sub = dir.join(format!("c{i:04}"));
+        std::fs::create_dir(&sub).expect("Failed to create subdirectory");
+        paths.push(sub);
+    }
+    paths
+}
+
 /// Benchmark helper: measures paths_mut total time (add all paths + commit)
 fn bench_paths_mut<W: Watcher>(watcher: &mut W, paths: &[PathBuf], mode: RecursiveMode) {
     let mut paths_mut = watcher.paths_mut();
@@ -64,7 +75,7 @@ fn bench_inotify_paths_mut(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("inotify_paths_mut");
 
-    for file_count in [100, 500, 1000] {
+    for file_count in [100, 200, 400] {
         for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
             let mode_str = match mode {
                 RecursiveMode::Recursive => "recursive",
@@ -95,6 +106,38 @@ fn bench_inotify_paths_mut(c: &mut Criterion) {
     group.finish();
 }
 
+// INotify sibling-subdir benchmarks (Linux/Android)
+#[cfg(target_os = "linux")]
+fn bench_inotify_sibling_subdirs(c: &mut Criterion) {
+    use notify::INotifyWatcher;
+
+    let mut group = c.benchmark_group("inotify_sibling_subdirs");
+
+    for count in [10, 100, 300] {
+        for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
+            let mode_str = match mode {
+                RecursiveMode::Recursive => "recursive",
+                RecursiveMode::NonRecursive => "nonrecursive",
+            };
+
+            group.bench_with_input(BenchmarkId::new(mode_str, count), &count, |b, &count| {
+                let temp_dir = TempDir::new().expect("Failed to create temp dir");
+                let paths = create_sibling_subdirs(temp_dir.path(), count);
+
+                b.iter(|| {
+                    let mut watcher =
+                        INotifyWatcher::new(move |_res| {}, notify::Config::default())
+                            .expect("Failed to create watcher");
+
+                    bench_paths_mut(&mut watcher, black_box(&paths), mode);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
 // FSEvent benchmarks (macOS)
 #[cfg(all(target_os = "macos", not(feature = "macos_kqueue")))]
 fn bench_fsevent_paths_mut(c: &mut Criterion) {
@@ -102,7 +145,7 @@ fn bench_fsevent_paths_mut(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("fsevent_paths_mut");
 
-    for file_count in [100, 500, 1000] {
+    for file_count in [100, 200, 400] {
         for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
             let mode_str = match mode {
                 RecursiveMode::Recursive => "recursive",
@@ -131,6 +174,38 @@ fn bench_fsevent_paths_mut(c: &mut Criterion) {
     group.finish();
 }
 
+// FSEvent sibling-subdir benchmarks (macOS)
+#[cfg(all(target_os = "macos", not(feature = "macos_kqueue")))]
+fn bench_fsevent_sibling_subdirs(c: &mut Criterion) {
+    use notify::FsEventWatcher;
+
+    let mut group = c.benchmark_group("fsevent_sibling_subdirs");
+
+    for count in [10, 100, 300] {
+        for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
+            let mode_str = match mode {
+                RecursiveMode::Recursive => "recursive",
+                RecursiveMode::NonRecursive => "nonrecursive",
+            };
+
+            group.bench_with_input(BenchmarkId::new(mode_str, count), &count, |b, &count| {
+                let temp_dir = TempDir::new().expect("Failed to create temp dir");
+                let paths = create_sibling_subdirs(temp_dir.path(), count);
+
+                b.iter(|| {
+                    let mut watcher =
+                        FsEventWatcher::new(move |_res| {}, notify::Config::default())
+                            .expect("Failed to create watcher");
+
+                    bench_paths_mut(&mut watcher, black_box(&paths), mode);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
 // Kqueue benchmarks (macOS with macos_kqueue feature, BSD, iOS)
 #[cfg(any(
     all(target_os = "macos", feature = "macos_kqueue"),
@@ -145,7 +220,7 @@ fn bench_kqueue_paths_mut(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("kqueue_paths_mut");
 
-    for file_count in [100, 500, 1000] {
+    for file_count in [100, 200, 400] {
         for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
             let mode_str = match mode {
                 RecursiveMode::Recursive => "recursive",
@@ -174,6 +249,44 @@ fn bench_kqueue_paths_mut(c: &mut Criterion) {
     group.finish();
 }
 
+// Kqueue sibling-subdir benchmarks (macOS with macos_kqueue feature, BSD, iOS)
+#[cfg(any(
+    all(target_os = "macos", feature = "macos_kqueue"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    target_os = "ios"
+))]
+fn bench_kqueue_sibling_subdirs(c: &mut Criterion) {
+    use notify::KqueueWatcher;
+
+    let mut group = c.benchmark_group("kqueue_sibling_subdirs");
+
+    for count in [10, 100, 300] {
+        for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
+            let mode_str = match mode {
+                RecursiveMode::Recursive => "recursive",
+                RecursiveMode::NonRecursive => "nonrecursive",
+            };
+
+            group.bench_with_input(BenchmarkId::new(mode_str, count), &count, |b, &count| {
+                let temp_dir = TempDir::new().expect("Failed to create temp dir");
+                let paths = create_sibling_subdirs(temp_dir.path(), count);
+
+                b.iter(|| {
+                    let mut watcher = KqueueWatcher::new(move |_res| {}, notify::Config::default())
+                        .expect("Failed to create watcher");
+
+                    bench_paths_mut(&mut watcher, black_box(&paths), mode);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
 // Windows benchmarks
 #[cfg(target_os = "windows")]
 fn bench_windows_paths_mut(c: &mut Criterion) {
@@ -181,7 +294,7 @@ fn bench_windows_paths_mut(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("windows_paths_mut");
 
-    for file_count in [100, 500, 1000] {
+    for file_count in [100, 200, 400] {
         for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
             let mode_str = match mode {
                 RecursiveMode::Recursive => "recursive",
@@ -212,27 +325,14 @@ fn bench_windows_paths_mut(c: &mut Criterion) {
     group.finish();
 }
 
-/// Workload matching the issue #62 motivating shape: many sibling subdirectory
-/// watches under a shared parent, none of them on the parent itself. This is
-/// what the `ConsolidatingPathTrie` is designed to optimize.
-#[cfg(target_os = "windows")]
-fn create_sibling_subdirs(dir: &std::path::Path, count: usize) -> Vec<PathBuf> {
-    let mut paths = Vec::with_capacity(count);
-    for i in 0..count {
-        let sub = dir.join(format!("c{i:04}"));
-        std::fs::create_dir(&sub).expect("Failed to create subdirectory");
-        paths.push(sub);
-    }
-    paths
-}
-
+// Windows sibling-subdir benchmarks
 #[cfg(target_os = "windows")]
 fn bench_windows_sibling_subdirs(c: &mut Criterion) {
     use notify::ReadDirectoryChangesWatcher;
 
     let mut group = c.benchmark_group("windows_sibling_subdirs");
 
-    for count in [10, 50, 100, 500] {
+    for count in [10, 100, 300] {
         for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
             let mode_str = match mode {
                 RecursiveMode::Recursive => "recursive",
@@ -263,7 +363,7 @@ fn bench_poll_paths_mut(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("poll_paths_mut");
 
-    for file_count in [100, 500, 1000] {
+    for file_count in [100, 200, 400] {
         for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
             let mode_str = match mode {
                 RecursiveMode::Recursive => "recursive",
@@ -292,19 +392,67 @@ fn bench_poll_paths_mut(c: &mut Criterion) {
     group.finish();
 }
 
+// Poll sibling-subdir benchmarks (cross-platform)
+fn bench_poll_sibling_subdirs(c: &mut Criterion) {
+    use notify::PollWatcher;
+
+    let mut group = c.benchmark_group("poll_sibling_subdirs");
+
+    for count in [10, 100, 300] {
+        for mode in [RecursiveMode::NonRecursive, RecursiveMode::Recursive] {
+            let mode_str = match mode {
+                RecursiveMode::Recursive => "recursive",
+                RecursiveMode::NonRecursive => "nonrecursive",
+            };
+
+            group.bench_with_input(BenchmarkId::new(mode_str, count), &count, |b, &count| {
+                let temp_dir = TempDir::new().expect("Failed to create temp dir");
+                let paths = create_sibling_subdirs(temp_dir.path(), count);
+
+                b.iter(|| {
+                    let mut watcher = PollWatcher::new(move |_res| {}, notify::Config::default())
+                        .expect("Failed to create watcher");
+
+                    bench_paths_mut(&mut watcher, black_box(&paths), mode);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
 // Configure criterion groups based on platform
 #[cfg(target_os = "linux")]
-criterion_group!(benches, bench_inotify_paths_mut, bench_poll_paths_mut);
+criterion_group!(
+    benches,
+    bench_inotify_paths_mut,
+    bench_inotify_sibling_subdirs,
+    bench_poll_paths_mut,
+    bench_poll_sibling_subdirs
+);
 
 #[cfg(all(
     target_os = "macos",
     feature = "macos_fsevent",
     not(feature = "macos_kqueue")
 ))]
-criterion_group!(benches, bench_fsevent_paths_mut, bench_poll_paths_mut);
+criterion_group!(
+    benches,
+    bench_fsevent_paths_mut,
+    bench_fsevent_sibling_subdirs,
+    bench_poll_paths_mut,
+    bench_poll_sibling_subdirs
+);
 
 #[cfg(all(target_os = "macos", feature = "macos_kqueue"))]
-criterion_group!(benches, bench_kqueue_paths_mut, bench_poll_paths_mut);
+criterion_group!(
+    benches,
+    bench_kqueue_paths_mut,
+    bench_kqueue_sibling_subdirs,
+    bench_poll_paths_mut,
+    bench_poll_sibling_subdirs
+);
 
 #[cfg(any(
     target_os = "freebsd",
@@ -313,14 +461,21 @@ criterion_group!(benches, bench_kqueue_paths_mut, bench_poll_paths_mut);
     target_os = "dragonfly",
     target_os = "ios"
 ))]
-criterion_group!(benches, bench_kqueue_paths_mut, bench_poll_paths_mut);
+criterion_group!(
+    benches,
+    bench_kqueue_paths_mut,
+    bench_kqueue_sibling_subdirs,
+    bench_poll_paths_mut,
+    bench_poll_sibling_subdirs
+);
 
 #[cfg(target_os = "windows")]
 criterion_group!(
     benches,
     bench_windows_paths_mut,
     bench_windows_sibling_subdirs,
-    bench_poll_paths_mut
+    bench_poll_paths_mut,
+    bench_poll_sibling_subdirs
 );
 
 #[cfg(not(any(
@@ -333,6 +488,6 @@ criterion_group!(
     target_os = "dragonfly",
     target_os = "ios"
 )))]
-criterion_group!(benches, bench_poll_paths_mut);
+criterion_group!(benches, bench_poll_paths_mut, bench_poll_sibling_subdirs);
 
 criterion_main!(benches);
