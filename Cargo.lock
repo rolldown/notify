@@ -238,9 +238,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "deser-hjson"
-version = "2.2.5"
+version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fbc1498156ddf9adc2eb251c1697b3a0dea599c94fb8cf1313f986adcc70f6e"
+checksum = "a0d49a923edd92dc1ca5819822f540ea83f094ab5ac6940e4044e03c1d8e6576"
 dependencies = [
  "serde",
 ]
@@ -517,9 +517,9 @@ dependencies = [
 
 [[package]]
 name = "insta"
-version = "1.47.2"
+version = "1.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
 dependencies = [
  "console",
  "once_cell",
