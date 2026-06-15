@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.5.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.4.0...rolldown-notify-v10.5.0) - 2026-06-15
+
+### Added
+
+- store accurate mtime for polling ([#101](https://github.com/rolldown/notify/pull/101))
+
 ## [10.4.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.3.1...rolldown-notify-v10.4.0) - 2026-05-20
 
 ### Added
