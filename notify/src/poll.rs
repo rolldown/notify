@@ -84,19 +84,11 @@ mod data {
         hash::{BuildHasher, Hasher},
         io::{self, Read},
         path::{Path, PathBuf},
-        time::Instant,
+        time::{Instant, SystemTime},
     };
     use walkdir::WalkDir;
 
     use super::ScanEventHandler;
-
-    fn system_time_to_seconds(time: std::time::SystemTime) -> i64 {
-        #[expect(clippy::cast_possible_wrap)]
-        match time.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-            Ok(d) => d.as_secs() as i64,
-            Err(e) => -(e.duration().as_secs() as i64),
-        }
-    }
 
     /// Builder for [`WatchData`] & [`PathData`].
     pub(super) struct DataBuilder {
@@ -398,7 +390,7 @@ mod data {
     #[derive(Debug, Clone)]
     struct PathData {
         /// File updated time.
-        mtime: i64,
+        mtime: SystemTime,
 
         file_type: FileType,
 
@@ -416,7 +408,7 @@ mod data {
             let metadata = meta_path.metadata();
 
             PathData {
-                mtime: metadata.modified().map_or(0, system_time_to_seconds),
+                mtime: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 file_type: metadata.file_type(),
                 hash: data_builder
                     .build_hasher
@@ -857,7 +849,10 @@ mod tests {
         rx.sleep_until_parent_contains(&path);
         rx.sleep_until_exists(&path);
 
-        rx.wait_ordered_exact([expected(&path).create_file()]);
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
+            expected(&path).create_file(),
+        ]);
     }
 
     #[test]
@@ -928,7 +923,10 @@ mod tests {
         rx.sleep_until_parent_contains(&path);
         rx.sleep_until_exists(&path);
 
-        rx.wait_ordered_exact([expected(&path).create_folder()]);
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
+            expected(&path).create_folder(),
+        ]);
     }
 
     #[test]
@@ -948,7 +946,7 @@ mod tests {
             rx.sleep_until(|| std::fs::read_to_string(&path).is_ok_and(|content| content == "123")),
             "the file wasn't modified"
         );
-        rx.wait_ordered_exact([expected(&path).modify_data_any()]);
+        rx.wait_unordered_exact([expected(&path).modify().multiple()]);
     }
 
     #[test]
@@ -975,6 +973,7 @@ mod tests {
         rx.wait_unordered_exact([
             expected(&path).remove_file(),
             expected(&new_path).create_file(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
         ]);
     }
 
@@ -1075,6 +1074,7 @@ mod tests {
         rx.sleep_while_parent_contains(&path);
 
         rx.wait_ordered_exact([
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
             expected(&path).modify_data_any().optional(),
             expected(&path).remove_file(),
         ]);
@@ -1164,6 +1164,6 @@ mod tests {
             "file {overwritten_file:?} was not replaced"
         );
 
-        rx.wait_unordered([expected(&overwritten_file).modify_data_any()]);
+        rx.wait_unordered([expected(&overwritten_file).modify()]);
     }
 }
