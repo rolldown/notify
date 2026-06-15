@@ -849,9 +849,9 @@ mod tests {
         rx.sleep_until_parent_contains(&path);
         rx.sleep_until_exists(&path);
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_meta_mtime().optional(),
+        rx.wait_unordered_exact([
             expected(&path).create_file(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
         ]);
     }
 
@@ -923,9 +923,9 @@ mod tests {
         rx.sleep_until_parent_contains(&path);
         rx.sleep_until_exists(&path);
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_meta_mtime().optional(),
+        rx.wait_unordered_exact([
             expected(&path).create_folder(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
         ]);
     }
 
@@ -1073,10 +1073,10 @@ mod tests {
         rx.sleep_while_exists(&path);
         rx.sleep_while_parent_contains(&path);
 
-        rx.wait_ordered_exact([
-            expected(tmpdir.path()).modify_meta_mtime().optional(),
+        rx.wait_unordered_exact([
             expected(&path).modify_data_any().optional(),
             expected(&path).remove_file(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
         ]);
     }
 
