@@ -753,6 +753,24 @@ mod tests {
         channel()
     }
 
+    #[test]
+    fn rewatching_same_path_does_not_duplicate_watch_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut watcher = FsEventWatcher::new(|_| {}, Config::default()).unwrap();
+
+        watcher
+            .append_path(dir.path(), WatchMode::recursive())
+            .expect("watch recursively");
+        watcher
+            .append_path(dir.path(), WatchMode::non_recursive())
+            .expect("rewatch non-recursively");
+
+        assert_eq!(watcher.watches.len(), 1);
+
+        watcher.update_paths_based_on_watches();
+        assert_eq!(watcher.paths.len(), 1);
+    }
+
     #[expect(clippy::print_stdout)]
     #[test]
     fn test_fsevent_watcher_drop() {
