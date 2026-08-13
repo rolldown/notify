@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- keep Linux `TrackPath` watches active after files in nested directories are atomically replaced
+
 ## [10.5.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.4.0...rolldown-notify-v10.5.0) - 2026-06-15
 
 ### Added
