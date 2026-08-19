@@ -480,12 +480,7 @@ impl EventLoop {
             if need_to_watch_parent_newly && let Some(parent) = path.parent() {
                 self.add_single_watch(parent.to_path_buf())?;
             }
-            if !need_upgrade_to_recursive {
-                return Ok(());
-            }
-
-            // upgrade to recursive
-            if metadata(&path).map_err(Error::io)?.is_dir() {
+            if need_upgrade_to_recursive && metadata(&path).map_err(Error::io)?.is_dir() {
                 self.add_maybe_recursive_watch(path.clone(), true, true)?;
             }
             self.watches
@@ -1164,6 +1159,61 @@ mod tests {
                 overwritten_file
             ]))
         );
+    }
+
+    fn assert_track_path_continues_after_recreating_file_in_nested_directory(
+        upgrade_from_no_track: bool,
+    ) {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let nested_dir = tmpdir.path().join("nested");
+        let watched_file = nested_dir.join("watched");
+        let moved_file = tmpdir.path().join("moved");
+        std::fs::create_dir(&nested_dir).expect("create nested dir");
+        std::fs::write(&watched_file, "initial").expect("write watched file");
+
+        watcher.watch_nonrecursively(&tmpdir);
+        if upgrade_from_no_track {
+            watcher.watch(
+                &watched_file,
+                WatchMode {
+                    recursive_mode: RecursiveMode::NonRecursive,
+                    target_mode: TargetMode::NoTrack,
+                },
+            );
+        }
+        watcher.watch_nonrecursively(&watched_file);
+
+        std::fs::rename(&watched_file, &moved_file).expect("move watched file");
+        std::fs::copy(&moved_file, &watched_file).expect("recreate watched file");
+        std::fs::remove_file(&moved_file).expect("remove moved file");
+
+        // Wait until the replacement events are drained before checking the next write.
+        for _ in rx.iter() {}
+
+        std::fs::write(&watched_file, "updated").expect("update watched file");
+        let received_change = rx.iter().any(|event| {
+            event.paths.iter().any(|path| path == &watched_file)
+                && matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Data(_))
+                )
+        });
+
+        assert!(
+            received_change,
+            "expected a change event after recreating the watched file"
+        );
+    }
+
+    #[test]
+    fn track_path_continues_after_recreating_file_in_nested_directory() {
+        assert_track_path_continues_after_recreating_file_in_nested_directory(false);
+    }
+
+    #[test]
+    fn track_path_upgrade_continues_after_recreating_file_in_nested_directory() {
+        assert_track_path_continues_after_recreating_file_in_nested_directory(true);
     }
 
     #[test]
