@@ -1,0 +1,19 @@
+notify/src/windows.rs
+  s_2c73479458c44c::t_0a929a51f50ff2 1025,1483
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d488bafa35f15200baf254af5c38d4bfb3b0341b",
+  "prompts": {},
+  "sessions": {
+    "s_2c73479458c44c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a01978-04c9-7b72-b48e-39849ce50bb8",
+        "model": "unknown"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
