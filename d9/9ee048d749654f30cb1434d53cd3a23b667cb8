@@ -1,0 +1,25 @@
+notify/src/poll.rs
+  s_2c73479458c44c::t_c83916ba5e6521 827-829,1171-1226
+notify/src/fsevent.rs
+  s_2c73479458c44c::t_35237af0721462 1219-1273
+notify/src/kqueue.rs
+  s_2c73479458c44c::t_32a6a9b77c2d6b 483,1164-1218
+notify/src/windows.rs
+  s_2c73479458c44c::t_a461c61b803721 1025-1028,1453-1507
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d99ee048d749654f30cb1434d53cd3a23b667cb8",
+  "prompts": {},
+  "sessions": {
+    "s_2c73479458c44c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a01978-04c9-7b72-b48e-39849ce50bb8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
