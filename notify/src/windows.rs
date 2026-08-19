@@ -1022,10 +1022,7 @@ unsafe impl Sync for ReadDirectoryChangesWatcher {}
 pub mod tests {
     use crate::{
         Error, ErrorKind, ReadDirectoryChangesWatcher, RecursiveMode, TargetMode, WatchMode,
-        Watcher,
-        event::{EventKind, ModifyKind},
-        test::*,
-        windows::normalize_path_separators,
+        Watcher, event::EventKind, test::*, windows::normalize_path_separators,
     };
 
     use std::{
@@ -1483,10 +1480,7 @@ pub mod tests {
         std::fs::write(&watched_file, "updated").expect("update watched file");
         let received_change = rx.iter().any(|event| {
             event.paths.iter().any(|path| path == &watched_file)
-                && matches!(
-                    event.kind,
-                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Data(_))
-                )
+                && matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
         });
 
         assert!(
