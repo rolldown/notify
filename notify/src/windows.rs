@@ -5,7 +5,9 @@
 //!
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
+use crate::config::EntryKind;
 use crate::consolidating_path_trie::ConsolidatingPathTrie;
+use crate::filter::{AncestorMemo, IgnoreFilter};
 use crate::{
     BoundSender, Config, ErrorKind, PathsMut, Receiver, Sender, TargetMode, WatchMode, bounded,
     unbounded,
@@ -95,6 +97,7 @@ struct ReadData {
     watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
     complete_sem: HANDLE,
     is_recursive: bool,
+    ignore_filter: IgnoreFilter,
 }
 
 struct ReadDirectoryRequest {
@@ -150,6 +153,7 @@ struct ReadDirectoryChangesServer {
     resolved_watches: HashMap<PathBuf, ResolvedWatch, FxBuildHasher>,
     watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool), FxBuildHasher>,
     wakeup_sem: HANDLE,
+    ignore_filter: IgnoreFilter,
 }
 
 impl ReadDirectoryChangesServer {
@@ -157,6 +161,7 @@ impl ReadDirectoryChangesServer {
         event_handler: Arc<Mutex<dyn EventHandler>>,
         cmd_tx: Sender<Result<PathBuf>>,
         wakeup_sem: HANDLE,
+        ignore_filter: IgnoreFilter,
     ) -> Sender<Action> {
         let (action_tx, action_rx) = unbounded();
         // it is, in fact, ok to send the semaphore across threads
@@ -176,6 +181,7 @@ impl ReadDirectoryChangesServer {
                         resolved_watches: HashMap::default(),
                         watch_handles: HashMap::default(),
                         wakeup_sem,
+                        ignore_filter,
                     };
                     server.run();
                 }
@@ -264,7 +270,7 @@ impl ReadDirectoryChangesServer {
             }
             None => mode,
         };
-        let resolved = resolve_user_watch(&path, merged)?;
+        let resolved = resolve_user_watch(&path, merged, &self.ignore_filter)?;
         self.watches.borrow_mut().insert(path.clone(), merged);
         self.resolved_watches.insert(path, resolved);
         Ok(())
@@ -432,6 +438,7 @@ impl ReadDirectoryChangesServer {
             watches: Rc::clone(&self.watches),
             complete_sem: semaphore,
             is_recursive,
+            ignore_filter: self.ignore_filter.clone(),
         };
         let ws = WatchState {
             dir_handle: handle,
@@ -484,12 +491,27 @@ impl ReadDirectoryChangesServer {
 
 /// Resolve a user-supplied watch path + mode into a [`ResolvedWatch`] describing
 /// which OS-level directories we'd want to watch.
-fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<ResolvedWatch> {
+fn resolve_user_watch(
+    path: &Path,
+    mode: WatchMode,
+    ignore_filter: &IgnoreFilter,
+) -> Result<ResolvedWatch> {
     let is_track_path = mode.target_mode == TargetMode::TrackPath;
 
     // Note: reading metadata on a directory triggers a modify event
     match path.metadata().map_err(Error::io_watch) {
         Ok(meta) => {
+            let kind = if meta.is_dir() {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            };
+            if ignore_filter.is_ignored_path(path, kind) {
+                return Ok(ResolvedWatch {
+                    primary: None,
+                    needs_tracked_parent: false,
+                });
+            }
             if meta.is_dir() {
                 Ok(ResolvedWatch {
                     primary: Some((path.to_path_buf(), mode.recursive_mode.is_recursive())),
@@ -512,12 +534,12 @@ fn resolve_user_watch(path: &Path, mode: WatchMode) -> Result<ResolvedWatch> {
             }
         }
         Err(err) => {
-            // For TrackPath we keep the watch alive and rely on the parent dir
-            // to tell us when something appears at `path`.
             if is_track_path && matches!(err.kind, ErrorKind::PathNotFound) {
+                // For TrackPath we keep the watch alive and rely on the parent dir
+                // to tell us when something appears at `path`.
                 Ok(ResolvedWatch {
                     primary: None,
-                    needs_tracked_parent: true,
+                    needs_tracked_parent: !ignore_filter.is_ignored_path(path, EntryKind::Unknown),
                 })
             } else {
                 Err(err)
@@ -711,6 +733,7 @@ unsafe extern "system" fn handle_event(
     );
 
     let mut remove_paths = vec![];
+    let mut ancestor_memo = AncestorMemo::default();
 
     // The FILE_NOTIFY_INFORMATION struct has a variable length due to the variable length
     // string as its last member. Each struct contains an offset for getting the next entry in
@@ -740,7 +763,14 @@ unsafe extern "system" fn handle_event(
                 .join(PathBuf::from(OsString::from_wide(encoded_path))),
         );
 
-        let skip = !is_event_covered(&request.data.watches.borrow(), &path);
+        let watches = request.data.watches.borrow();
+        let skip = !is_event_covered(&watches, &path)
+            || (request.data.ignore_filter.is_active()
+                && request.data.ignore_filter.is_ignored_event_path(
+                    &path,
+                    EntryKind::Unknown,
+                    &mut ancestor_memo,
+                ));
 
         tracing::trace!(
             handle_path = ?request.data.dir,
@@ -822,9 +852,14 @@ pub struct ReadDirectoryChangesWatcher {
 }
 
 impl ReadDirectoryChangesWatcher {
-    pub fn create(
+    pub fn create(event_handler: Arc<Mutex<dyn EventHandler>>) -> Result<Self> {
+        Self::create_with_filter(event_handler, IgnoreFilter::default())
+    }
+
+    fn create_with_filter(
         event_handler: Arc<Mutex<dyn EventHandler>>,
-    ) -> Result<ReadDirectoryChangesWatcher> {
+        ignore_filter: IgnoreFilter,
+    ) -> Result<Self> {
         let (cmd_tx, cmd_rx) = unbounded();
 
         let wakeup_sem = unsafe { CreateSemaphoreW(ptr::null_mut(), 0, 1, ptr::null_mut()) };
@@ -832,7 +867,8 @@ impl ReadDirectoryChangesWatcher {
             return Err(Error::generic("Failed to create wakeup semaphore."));
         }
 
-        let action_tx = ReadDirectoryChangesServer::start(event_handler, cmd_tx, wakeup_sem);
+        let action_tx =
+            ReadDirectoryChangesServer::start(event_handler, cmd_tx, wakeup_sem, ignore_filter);
 
         Ok(ReadDirectoryChangesWatcher {
             tx: action_tx,
@@ -959,10 +995,9 @@ impl PathsMut for WindowsPathsMut<'_> {
 
 impl Watcher for ReadDirectoryChangesWatcher {
     #[tracing::instrument(level = "debug", skip(event_handler))]
-    #[expect(clippy::used_underscore_binding)]
-    fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
+    fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
         let event_handler = Arc::new(Mutex::new(event_handler));
-        Self::create(event_handler)
+        Self::create_with_filter(event_handler, IgnoreFilter::new(&config))
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -1021,8 +1056,8 @@ unsafe impl Sync for ReadDirectoryChangesWatcher {}
 #[cfg(test)]
 pub mod tests {
     use crate::{
-        Error, ErrorKind, ReadDirectoryChangesWatcher, RecursiveMode, TargetMode, WatchMode,
-        Watcher, event::EventKind, test::*, windows::normalize_path_separators,
+        Config, Error, ErrorKind, ReadDirectoryChangesWatcher, RecursiveMode, TargetMode,
+        WatchMode, Watcher, event::EventKind, test::*, windows::normalize_path_separators,
     };
 
     use std::{
@@ -1032,6 +1067,61 @@ pub mod tests {
 
     fn watcher() -> (TestWatcher<ReadDirectoryChangesWatcher>, Receiver) {
         channel()
+    }
+
+    #[test]
+    fn ignored_missing_no_track_path_is_rejected() {
+        let tmpdir = testdir();
+        let path = tmpdir.path().join("node_modules");
+        let (mut watcher, _) = channel_with_config::<ReadDirectoryChangesWatcher>(
+            &ChannelConfig::default().with_watcher_config(Config::default().with_ignored(
+                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
+            )),
+        );
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error {
+                kind: ErrorKind::PathNotFound,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn explicitly_watched_root_is_ignored() {
+        let tmpdir = testdir();
+        let ignored_dir = tmpdir.path().join("node_modules");
+        let watched_dir = ignored_dir.join("pkg");
+        let dep = watched_dir.join("dep.js");
+        std::fs::create_dir_all(&watched_dir).expect("create dir");
+        std::fs::write(&dep, "").expect("create dep");
+
+        let (mut watcher, rx) = channel_with_config::<ReadDirectoryChangesWatcher>(
+            &ChannelConfig::default().with_watcher_config(Config::default().with_ignored(
+                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
+            )),
+        );
+        watcher.watch_recursively(&watched_dir);
+
+        assert!(watcher.get_watch_handles().is_empty());
+        std::fs::write(&dep, b"123").expect("write");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        watcher
+            .watcher
+            .unwatch(&watched_dir)
+            .expect("unwatch ignored root");
     }
 
     #[test]

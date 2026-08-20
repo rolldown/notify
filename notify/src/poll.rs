@@ -5,9 +5,10 @@
 
 use crate::{
     Config, Error, EventHandler, PathsMut, Receiver, Result, Sender, WatchMode, Watcher,
-    poll::data::WatchData, unbounded,
+    filter::IgnoreFilter, poll::data::WatchData, unbounded,
 };
 use std::{
+    env,
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
@@ -74,6 +75,7 @@ mod data {
         Error, EventHandler, Result, WatchMode,
         consolidating_path_trie::ConsolidatingPathTrie,
         event::{CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind},
+        filter::IgnoreFilter,
     };
     use rustc_hash::FxBuildHasher;
     use std::{
@@ -169,19 +171,31 @@ mod data {
         }
 
         /// Recalculate from `watches`.
-        fn recalculate(&mut self, watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>) {
+        fn recalculate(
+            &mut self,
+            watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
+            ignore_filter: &IgnoreFilter,
+        ) {
             self.next.clear();
             self.is_stale = true;
 
             let mut trie = ConsolidatingPathTrie::new(false, 0);
             for (path, mode) in watches {
-                if mode.recursive_mode == crate::RecursiveMode::Recursive {
+                if mode.recursive_mode == crate::RecursiveMode::Recursive
+                    && (!ignore_filter.is_active()
+                        || !ignore_filter
+                            .is_ignored_path(path, crate::filter::entry_kind_of_path(path)))
+                {
                     trie.insert(path);
                 }
             }
             // insert non-recursive watches that are not covered by recursive watches
             for (path, mode) in watches {
-                if mode.recursive_mode != crate::RecursiveMode::Recursive {
+                if mode.recursive_mode != crate::RecursiveMode::Recursive
+                    && (!ignore_filter.is_active()
+                        || !ignore_filter
+                            .is_ignored_path(path, crate::filter::entry_kind_of_path(path)))
+                {
                     self.next.insert(path.clone(), false);
                 }
             }
@@ -206,6 +220,7 @@ mod data {
     pub(super) struct WatchData {
         // config part, won't change.
         follow_symlinks: bool,
+        ignore_filter: IgnoreFilter,
 
         // current status part.
         watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
@@ -215,9 +230,10 @@ mod data {
 
     impl WatchData {
         /// Create a new `WatchData`.
-        pub fn new(follow_symlinks: bool) -> Self {
+        pub fn new(follow_symlinks: bool, ignore_filter: IgnoreFilter) -> Self {
             Self {
                 follow_symlinks,
+                ignore_filter,
                 watches: HashMap::default(),
                 watch_handlers: WatchHandlers::new(),
                 all_path_data: HashMap::default(),
@@ -230,7 +246,8 @@ mod data {
             }
 
             self.watches.insert(path, mode);
-            self.watch_handlers.recalculate(&self.watches);
+            self.watch_handlers
+                .recalculate(&self.watches, &self.ignore_filter);
             Ok(())
         }
 
@@ -242,13 +259,15 @@ mod data {
 
                 self.watches.insert(path, mode);
             }
-            self.watch_handlers.recalculate(&self.watches);
+            self.watch_handlers
+                .recalculate(&self.watches, &self.ignore_filter);
             Ok(())
         }
 
         pub fn remove_watch(&mut self, path: &Path) -> Result<()> {
             self.watches.remove(path).ok_or(Error::watch_not_found())?;
-            self.watch_handlers.recalculate(&self.watches);
+            self.watch_handlers
+                .recalculate(&self.watches, &self.ignore_filter);
             Ok(())
         }
 
@@ -261,40 +280,46 @@ mod data {
             let (watch_handlers, old_watch_handlers) = self.watch_handlers.use_handlers();
 
             // scan current filesystem.
-            for (path, new_path_data) in
-                Self::scan_all_path_data(data_builder, watch_handlers, self.follow_symlinks)
-            {
-                let event_kind = if let Some(old_path_data) = self.all_path_data.get_mut(&path) {
-                    let event_kind =
-                        PathData::compare_to_kind(Some(&*old_path_data), Some(&new_path_data));
-                    *old_path_data = new_path_data;
-                    event_kind
-                } else {
-                    let event_kind = PathData::compare_to_kind(None, Some(&new_path_data));
-                    self.all_path_data.insert(path.clone(), new_path_data);
-                    event_kind
-                };
+            Self::scan_all_path_data(
+                data_builder,
+                watch_handlers,
+                self.follow_symlinks,
+                &self.ignore_filter,
+                |path, new_path_data| {
+                    let event_kind = if let Some(old_path_data) = self.all_path_data.get_mut(&path)
+                    {
+                        let event_kind =
+                            PathData::compare_to_kind(Some(&*old_path_data), Some(&new_path_data));
+                        *old_path_data = new_path_data;
+                        event_kind
+                    } else {
+                        let event_kind = PathData::compare_to_kind(None, Some(&new_path_data));
+                        self.all_path_data.insert(path.clone(), new_path_data);
+                        event_kind
+                    };
 
-                let is_initial = old_watch_handlers
-                    .as_ref()
-                    .is_some_and(|old_watch_handlers| {
-                        !old_watch_handlers.contains_key(&path)
-                            && !path.ancestors().skip(1).any(|ancestor| {
-                                old_watch_handlers
-                                    .get(ancestor)
-                                    .is_some_and(|is_recursive| *is_recursive)
-                            })
-                    });
-                if is_initial {
-                    // emit initial scans
-                    if let Some(ref emitter) = data_builder.scan_emitter {
-                        emitter.borrow_mut().handle_event(Ok(path.clone()));
+                    let is_initial =
+                        old_watch_handlers
+                            .as_ref()
+                            .is_some_and(|old_watch_handlers| {
+                                !old_watch_handlers.contains_key(&path)
+                                    && !path.ancestors().skip(1).any(|ancestor| {
+                                        old_watch_handlers
+                                            .get(ancestor)
+                                            .is_some_and(|is_recursive| *is_recursive)
+                                    })
+                            });
+                    if is_initial {
+                        // emit initial scans
+                        if let Some(ref emitter) = data_builder.scan_emitter {
+                            emitter.borrow_mut().handle_event(Ok(path));
+                        }
+                    } else if let Some(event_kind) = event_kind {
+                        let event = Event::new(event_kind).add_path(path);
+                        data_builder.emitter.emit_ok(event);
                     }
-                } else if let Some(event_kind) = event_kind {
-                    let event = Event::new(event_kind).add_path(path);
-                    data_builder.emitter.emit_ok(event);
-                }
-            }
+                },
+            );
 
             // scan for disappeared paths.
             let mut disappeared_paths = Vec::new();
@@ -307,6 +332,19 @@ mod data {
             // remove disappeared paths
             for path in disappeared_paths {
                 let old_path_data = self.all_path_data.remove(&path);
+
+                if self.ignore_filter.is_active()
+                    && old_path_data.as_ref().is_some_and(|path_data| {
+                        let kind = if path_data.file_type.is_dir() {
+                            crate::EntryKind::Dir
+                        } else {
+                            crate::EntryKind::File
+                        };
+                        self.ignore_filter.is_ignored_path(&path, kind)
+                    })
+                {
+                    continue;
+                }
 
                 if let Some(event_kind) = PathData::compare_to_kind(old_path_data.as_ref(), None) {
                     let event = Event::new(event_kind).add_path(path);
@@ -324,63 +362,89 @@ mod data {
             data_builder: &DataBuilder,
             watch_handlers: &HashMap<PathBuf, /* recursive */ bool, FxBuildHasher>,
             follow_symlinks: bool,
-        ) -> impl Iterator<Item = (PathBuf, PathData)> {
+            ignore_filter: &IgnoreFilter,
+            mut handle: impl FnMut(PathBuf, PathData),
+        ) {
             tracing::trace!("rescanning");
 
-            watch_handlers.iter().flat_map(move |(path, is_recursive)| {
+            for (path, is_recursive) in watch_handlers {
                 tracing::trace!(?path, is_recursive, "scanning watch handler");
 
                 // WalkDir return only one entry if root is a file (not a folder),
                 // so we can use single logic to do the both file & dir's jobs.
                 //
                 // See: https://docs.rs/walkdir/2.0.1/walkdir/struct.WalkDir.html#method.new
-                WalkDir::new(path)
+                let walk = WalkDir::new(path)
                     .follow_links(follow_symlinks)
                     .max_depth(if *is_recursive { usize::MAX } else { 1 })
-                    .into_iter()
-                    .filter_map(|entry_res| match entry_res {
-                        Ok(entry) => Some(entry),
-                        Err(err) => {
-                            tracing::warn!("walkdir error scanning {err:?}");
+                    .into_iter();
 
-                            if let Some(io_error) = err.io_error() {
-                                if io_error.kind() == io::ErrorKind::NotFound {
-                                    return None;
-                                }
-                                // clone an io::Error, so we have to create a new one.
-                                let new_io_error = io::Error::new(io_error.kind(), err.to_string());
-                                data_builder.emitter.emit_io_err(new_io_error, err.path());
-                            } else {
-                                let crate_err =
-                                    Error::new(crate::ErrorKind::Generic(err.to_string()));
-                                data_builder.emitter.emit(Err(crate_err));
+                if ignore_filter.is_active() {
+                    let filter = ignore_filter.clone();
+                    Self::scan_entries(
+                        data_builder,
+                        walk.filter_entry(move |entry| {
+                            entry.depth() == 0
+                                || !filter.is_ignored(
+                                    entry.path(),
+                                    crate::filter::entry_kind_of_walkdir(entry),
+                                )
+                        }),
+                        &mut handle,
+                    );
+                } else {
+                    Self::scan_entries(data_builder, walk, &mut handle);
+                }
+            }
+        }
+
+        fn scan_entries(
+            data_builder: &DataBuilder,
+            entries: impl Iterator<Item = walkdir::Result<walkdir::DirEntry>>,
+            handle: &mut impl FnMut(PathBuf, PathData),
+        ) {
+            for entry_res in entries {
+                let entry = match entry_res {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        tracing::warn!("walkdir error scanning {err:?}");
+
+                        if let Some(io_error) = err.io_error() {
+                            if io_error.kind() == io::ErrorKind::NotFound {
+                                continue;
                             }
-                            None
+                            // clone an io::Error, so we have to create a new one.
+                            let new_io_error = io::Error::new(io_error.kind(), err.to_string());
+                            data_builder.emitter.emit_io_err(new_io_error, err.path());
+                        } else {
+                            let crate_err = Error::new(crate::ErrorKind::Generic(err.to_string()));
+                            data_builder.emitter.emit(Err(crate_err));
                         }
-                    })
-                    .filter_map(move |entry| match entry.metadata() {
-                        Ok(metadata) => {
-                            let path = entry.into_path();
-                            let meta_path = MetaPath::from_parts_unchecked(path, metadata);
-                            let data_path = data_builder.build_path_data(&meta_path);
+                        continue;
+                    }
+                };
 
-                            Some((meta_path.into_path(), data_path))
+                match entry.metadata() {
+                    Ok(metadata) => {
+                        let path = entry.into_path();
+                        let meta_path = MetaPath::from_parts_unchecked(path, metadata);
+                        let path_data = data_builder.build_path_data(&meta_path);
+                        handle(meta_path.into_path(), path_data);
+                    }
+                    Err(err) => {
+                        if err
+                            .io_error()
+                            .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
+                        {
+                            continue;
                         }
-                        Err(err) => {
-                            if let Some(io_error) = err.io_error()
-                                && io_error.kind() == io::ErrorKind::NotFound
-                            {
-                                return None;
-                            }
 
-                            // emit event.
-                            let path = entry.into_path();
-                            data_builder.emitter.emit_io_err(err, Some(path));
-
-                            None
-                        }
-                    })
-            })
+                        data_builder
+                            .emitter
+                            .emit_io_err(err, Some(entry.into_path()));
+                    }
+                }
+            }
         }
     }
 
@@ -570,6 +634,14 @@ enum EventLoopMsg {
     Shutdown,
 }
 
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(env::current_dir().map_err(Error::io)?.join(path))
+    }
+}
+
 struct PollPathsMut<'a> {
     inner: &'a mut PollWatcher,
     add_paths: Vec<(PathBuf, WatchMode)>,
@@ -611,14 +683,16 @@ impl PathsMut for PollPathsMut<'_> {
 pub struct PollWatcher {
     delay: Option<Duration>,
     follow_symlinks: bool,
+    ignore_filter: IgnoreFilter,
 
     event_loop_tx: Sender<EventLoopMsg>,
 }
 
 impl PollWatcher {
     /// Create a new [`PollWatcher`], configured as needed.
+    #[expect(clippy::needless_pass_by_value, reason = "public API compatibility")]
     pub fn new<F: EventHandler>(event_handler: F, config: Config) -> crate::Result<PollWatcher> {
-        Ok(Self::with_opt::<_, ()>(event_handler, config, None))
+        Ok(Self::with_opt::<_, ()>(event_handler, &config, None))
     }
 
     /// Actively poll for changes. Can be combined with a timeout of 0 to perform only manual polling.
@@ -659,18 +733,19 @@ impl PollWatcher {
     /// Create a new [`PollWatcher`] with an scan event handler.
     ///
     /// `scan_fallback` is called on the initial scan with all files seen by the pollwatcher.
+    #[expect(clippy::needless_pass_by_value, reason = "public API compatibility")]
     pub fn with_initial_scan<F: EventHandler, G: ScanEventHandler>(
         event_handler: F,
         config: Config,
         scan_callback: G,
     ) -> crate::Result<PollWatcher> {
-        Ok(Self::with_opt(event_handler, config, Some(scan_callback)))
+        Ok(Self::with_opt(event_handler, &config, Some(scan_callback)))
     }
 
     /// create a new [`PollWatcher`] with all options.
     fn with_opt<F: EventHandler, G: ScanEventHandler>(
         event_handler: F,
-        config: Config,
+        config: &Config,
         scan_callback: Option<G>,
     ) -> PollWatcher {
         let (tx, rx) = unbounded();
@@ -678,6 +753,7 @@ impl PollWatcher {
         let poll_watcher = PollWatcher {
             delay: config.poll_interval(),
             follow_symlinks: config.follow_symlinks(),
+            ignore_filter: IgnoreFilter::new(config),
 
             event_loop_tx: tx,
         };
@@ -692,11 +768,12 @@ impl PollWatcher {
     fn run(&self, rx: Receiver<EventLoopMsg>, mut data_builder: DataBuilder) {
         let delay = self.delay;
         let follow_symlinks = self.follow_symlinks;
+        let ignore_filter = self.ignore_filter.clone();
 
         let result = thread::Builder::new()
             .name("notify-rs poll loop".to_string())
             .spawn(move || {
-                let mut watch_data = WatchData::new(follow_symlinks);
+                let mut watch_data = WatchData::new(follow_symlinks, ignore_filter);
 
                 loop {
                     data_builder.update_timestamp();
@@ -758,11 +835,15 @@ impl PollWatcher {
     fn watch_inner(&self, path: &Path, watch_mode: WatchMode) -> crate::Result<()> {
         let (tx, rx) = unbounded();
         self.event_loop_tx
-            .send(EventLoopMsg::AddWatch(path.to_path_buf(), watch_mode, tx))?;
+            .send(EventLoopMsg::AddWatch(absolute_path(path)?, watch_mode, tx))?;
         rx.recv().unwrap()
     }
 
     fn watch_multiple_inner(&self, paths: Vec<(PathBuf, WatchMode)>) -> crate::Result<()> {
+        let paths = paths
+            .into_iter()
+            .map(|(path, mode)| absolute_path(&path).map(|path| (path, mode)))
+            .collect::<Result<Vec<_>>>()?;
         let (tx, rx) = unbounded();
         self.event_loop_tx
             .send(EventLoopMsg::AddWatchMultiple(paths, tx))?;
@@ -775,7 +856,7 @@ impl PollWatcher {
     fn unwatch_inner(&self, path: &Path) -> crate::Result<()> {
         let (tx, rx) = unbounded();
         self.event_loop_tx
-            .send(EventLoopMsg::RemoveWatch(path.to_path_buf(), tx))?;
+            .send(EventLoopMsg::RemoveWatch(absolute_path(path)?, tx))?;
         rx.recv().unwrap()
     }
 }
@@ -830,6 +911,108 @@ mod tests {
 
     fn watcher() -> (TestWatcher<PollWatcher>, Receiver) {
         poll_watcher_channel()
+    }
+
+    #[test]
+    fn ignored_missing_no_track_path_is_rejected() {
+        use crate::Config;
+
+        let tmpdir = testdir();
+        let path = tmpdir.path().join("node_modules");
+        let (mut watcher, _) =
+            poll_watcher_channel_with_config(Config::default().with_manual_polling().with_ignored(
+                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
+            ));
+
+        let watch_mode = WatchMode {
+            recursive_mode: RecursiveMode::NonRecursive,
+            target_mode: TargetMode::NoTrack,
+        };
+        let result = watcher.watcher.watch(&path, watch_mode);
+        assert!(matches!(
+            result,
+            Err(Error {
+                kind: ErrorKind::PathNotFound,
+                ..
+            })
+        ));
+
+        let mut paths = watcher.watcher.paths_mut();
+        paths.add(&path, watch_mode).expect("stage watch");
+        let result = paths.commit();
+        assert!(matches!(
+            result,
+            Err(Error {
+                kind: ErrorKind::PathNotFound,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ignored_directory_is_not_scanned_and_produces_no_events() {
+        use crate::Config;
+
+        let tmpdir = testdir();
+        let ignored_dir = tmpdir.path().join("node_modules");
+        let watched_dir = ignored_dir.join("pkg");
+        let dep = watched_dir.join("dep.js");
+        std::fs::create_dir_all(&watched_dir).expect("create dir");
+        std::fs::write(&dep, "").expect("create dep");
+
+        let (mut watcher, rx) = poll_watcher_channel_with_config(
+            Config::default()
+                .with_compare_contents(true)
+                .with_manual_polling()
+                .with_ignored(|path, _| {
+                    path.file_name().is_some_and(|name| name == "node_modules")
+                }),
+        );
+        watcher.watch_recursively(&tmpdir);
+        watcher.watcher.wait_next_scan().expect("wait next scan");
+
+        std::fs::write(&dep, b"123").expect("write dep");
+        let src = tmpdir.path().join("src.js");
+        std::fs::File::create_new(&src).expect("create src");
+
+        rx.sleep_until_parent_contains(&src);
+        rx.sleep_until_exists(&src);
+
+        rx.wait_unordered_exact([
+            expected(&src).create_file(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
+        ])
+        .ensure_no_tail();
+    }
+
+    #[test]
+    fn explicitly_watched_root_is_ignored() {
+        use crate::Config;
+
+        let tmpdir = testdir();
+        let ignored_dir = tmpdir.path().join("node_modules");
+        let watched_dir = ignored_dir.join("pkg");
+        let dep = watched_dir.join("dep.js");
+        std::fs::create_dir_all(&watched_dir).expect("create dir");
+        std::fs::write(&dep, "").expect("create dep");
+
+        let (mut watcher, rx) =
+            poll_watcher_channel_with_config(Config::default().with_manual_polling().with_ignored(
+                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
+            ));
+        watcher.watch_recursively(&watched_dir);
+        watcher.watcher.wait_next_scan().expect("wait next scan");
+
+        std::fs::write(&dep, b"123").expect("write");
+        watcher.watcher.wait_next_scan().expect("wait next scan");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        watcher
+            .watcher
+            .unwatch(&watched_dir)
+            .expect("unwatch ignored root");
     }
 
     #[test]
