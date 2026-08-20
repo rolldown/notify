@@ -7,13 +7,13 @@
 use super::event::*;
 use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, WatchMode, Watcher};
 use crate::bimap::BiHashMap;
+use crate::config::EntryKind;
+use crate::filter::{AncestorMemo, IgnoreFilter};
 use crate::{BoundSender, Receiver, Sender, TargetMode, bounded, unbounded};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use rustc_hash::FxBuildHasher;
-use std::collections::HashMap;
-#[cfg(test)]
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::metadata;
 use std::os::unix::fs::MetadataExt;
@@ -41,6 +41,7 @@ struct EventLoop {
     inotify: Option<Inotify>,
     event_handler: Box<dyn EventHandler>,
     watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    ignored_watches: HashSet<PathBuf, FxBuildHasher>,
     watch_handles: BiHashMap<
         WatchDescriptor,
         PathBuf,
@@ -49,6 +50,7 @@ struct EventLoop {
     >,
     rename_event: Option<Event>,
     follow_links: bool,
+    ignore_filter: IgnoreFilter,
 }
 
 /// Watcher implementation based on inotify
@@ -70,14 +72,16 @@ enum EventLoopMsg {
 #[inline]
 fn add_watch_by_event(
     path: &PathBuf,
+    is_dir: bool,
     is_file_without_hardlinks: bool,
     watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
-    add_watches: &mut Vec<(PathBuf, bool, bool)>,
+    add_watches: &mut Vec<(PathBuf, bool, bool, bool)>,
 ) {
     if let Some(watch_mode) = watches.get(path) {
         add_watches.push((
             path.to_owned(),
             watch_mode.recursive_mode.is_recursive(),
+            is_dir,
             is_file_without_hardlinks,
         ));
         return;
@@ -90,6 +94,7 @@ fn add_watch_by_event(
         add_watches.push((
             path.to_owned(),
             watch_mode.recursive_mode.is_recursive(),
+            is_dir,
             is_file_without_hardlinks,
         ));
         return;
@@ -99,7 +104,7 @@ fn add_watch_by_event(
         if let Some(watch_mode) = watches.get(ancestor)
             && watch_mode.recursive_mode == RecursiveMode::Recursive
         {
-            add_watches.push((path.to_owned(), true, is_file_without_hardlinks));
+            add_watches.push((path.to_owned(), true, is_dir, is_file_without_hardlinks));
             return;
         }
     }
@@ -121,6 +126,7 @@ impl EventLoop {
         inotify: Inotify,
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        ignore_filter: IgnoreFilter,
     ) -> Result<Self> {
         let (event_loop_tx, event_loop_rx) = unbounded::<EventLoopMsg>();
         let poll = mio::Poll::new()?;
@@ -141,9 +147,11 @@ impl EventLoop {
             inotify: Some(inotify),
             event_handler,
             watches: HashMap::default(),
+            ignored_watches: HashSet::default(),
             watch_handles: BiHashMap::default(),
             rename_event: None,
             follow_links,
+            ignore_filter,
         };
         Ok(event_loop)
     }
@@ -272,6 +280,7 @@ impl EventLoop {
         let mut add_watches = Vec::new();
         let mut remove_watches = Vec::new();
         let mut remove_watches_no_syscall = Vec::new();
+        let mut ancestor_memo = AncestorMemo::default();
 
         if let Some(ref mut inotify) = self.inotify {
             let mut buffer = [0; 1024];
@@ -357,12 +366,12 @@ impl EventLoop {
                                     }
                                 }
 
-                                let is_file_without_hardlinks = !event
-                                    .mask
-                                    .contains(EventMask::ISDIR)
+                                let is_dir = event.mask.contains(EventMask::ISDIR);
+                                let is_file_without_hardlinks = !is_dir
                                     && metadata(&path).is_ok_and(|m| m.is_file_without_hardlinks());
                                 add_watch_by_event(
                                     &path,
+                                    is_dir,
                                     is_file_without_hardlinks,
                                     &self.watches,
                                     &mut add_watches,
@@ -402,6 +411,7 @@ impl EventLoop {
                                     && metadata(&path).is_ok_and(|m| m.is_file_without_hardlinks());
                                 add_watch_by_event(
                                     &path,
+                                    is_dir,
                                     is_file_without_hardlinks,
                                     &self.watches,
                                     &mut add_watches,
@@ -512,6 +522,11 @@ impl EventLoop {
                             }
 
                             for ev in evs {
+                                if self.ignore_filter.is_active()
+                                    && self.ignore_filter.is_ignored_event(&ev, &mut ancestor_memo)
+                                {
+                                    continue;
+                                }
                                 self.event_handler.handle_event(Ok(ev));
                             }
                         }
@@ -560,7 +575,16 @@ impl EventLoop {
             self.remove_maybe_recursive_watch(&path, true, false).ok();
         }
 
-        for (path, is_recursive, is_file_without_hardlinks) in add_watches {
+        for (path, is_recursive, is_dir, is_file_without_hardlinks) in add_watches {
+            // Filter watches added after the initial recursive walk.
+            let kind = if is_dir {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            };
+            if self.ignore_filter.is_active() && self.ignore_filter.is_ignored_path(&path, kind) {
+                continue;
+            }
             if let Err(add_watch_error) =
                 self.add_maybe_recursive_watch(path, is_recursive, is_file_without_hardlinks, false)
             {
@@ -580,7 +604,48 @@ impl EventLoop {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
+    fn add_watch(&mut self, path: PathBuf, mut watch_mode: WatchMode) -> Result<()> {
+        let ignored = self.ignore_filter.is_active() && {
+            let path_kind = match metadata(&path).map_err(Error::io_watch) {
+                Ok(metadata) if metadata.is_dir() => EntryKind::Dir,
+                Ok(_) => EntryKind::File,
+                Err(err) => {
+                    if watch_mode.target_mode == TargetMode::TrackPath
+                        && matches!(err.kind, ErrorKind::PathNotFound)
+                    {
+                        EntryKind::Unknown
+                    } else {
+                        return Err(err);
+                    }
+                }
+            };
+            self.ignore_filter.is_ignored_path(&path, path_kind)
+        };
+        if ignored {
+            if let Some(mut existing) = self.watches.get(&path).copied() {
+                if !self.ignored_watches.contains(&path) {
+                    self.remove_maybe_recursive_watch(
+                        &path,
+                        existing.recursive_mode.is_recursive(),
+                        false,
+                    )?;
+                }
+
+                existing.upgrade_with(watch_mode);
+                watch_mode = existing;
+            }
+
+            self.watches.insert(path.clone(), watch_mode);
+            self.ignored_watches.insert(path);
+            return Ok(());
+        }
+
+        if self.ignored_watches.remove(&path)
+            && let Some(existing) = self.watches.remove(&path)
+        {
+            watch_mode.upgrade_with(existing);
+        }
+
         if let Some(existing) = self.watches.get(&path) {
             let need_upgrade_to_recursive = match existing.recursive_mode {
                 RecursiveMode::Recursive => false,
@@ -650,19 +715,39 @@ impl EventLoop {
         path: PathBuf,
         is_recursive: bool,
         is_file_without_hardlinks: bool,
-        mut watch_self: bool,
+        watch_self: bool,
     ) -> Result<()> {
         if is_recursive {
-            for entry in WalkDir::new(&path)
+            let walk = WalkDir::new(&path)
                 .follow_links(self.follow_links)
-                .into_iter()
-                .filter_map(filter_dir)
-            {
-                self.add_single_watch(entry.into_path(), false, watch_self)?;
-                watch_self = false;
+                .into_iter();
+            if self.ignore_filter.is_active() {
+                let filter = self.ignore_filter.clone();
+                self.add_recursive_watches(
+                    walk.filter_entry(move |entry| {
+                        entry.depth() == 0
+                            || !entry.file_type().is_dir()
+                            || !filter.is_ignored(entry.path(), EntryKind::Dir)
+                    }),
+                    watch_self,
+                )?;
+            } else {
+                self.add_recursive_watches(walk, watch_self)?;
             }
         } else {
             self.add_single_watch(path, is_file_without_hardlinks, watch_self)?;
+        }
+        Ok(())
+    }
+
+    fn add_recursive_watches(
+        &mut self,
+        entries: impl Iterator<Item = walkdir::Result<walkdir::DirEntry>>,
+        mut watch_self: bool,
+    ) -> Result<()> {
+        for entry in entries.filter_map(filter_dir) {
+            self.add_single_watch(entry.into_path(), false, watch_self)?;
+            watch_self = false;
         }
         Ok(())
     }
@@ -738,6 +823,7 @@ impl EventLoop {
 
     #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
+        self.ignored_watches.remove(&path);
         match self.watches.remove(&path) {
             None => return Err(Error::watch_not_found().add_path(path)),
             Some(watch_mode) => {
@@ -802,6 +888,7 @@ impl EventLoop {
             }
             self.watch_handles.clear();
             self.watches.clear();
+            self.ignored_watches.clear();
         }
         Ok(())
     }
@@ -821,9 +908,10 @@ impl INotifyWatcher {
     fn from_event_handler(
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        ignore_filter: IgnoreFilter,
     ) -> Result<Self> {
         let inotify = Inotify::init()?;
-        let event_loop = EventLoop::new(inotify, event_handler, follow_links)?;
+        let event_loop = EventLoop::new(inotify, event_handler, follow_links, ignore_filter)?;
         let channel = event_loop.event_loop_tx.clone();
         let waker = Arc::clone(&event_loop.event_loop_waker);
         event_loop.run();
@@ -867,7 +955,11 @@ impl Watcher for INotifyWatcher {
     /// Create a new watcher.
     #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
-        Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
+        Self::from_event_handler(
+            Box::new(event_handler),
+            config.follow_symlinks(),
+            IgnoreFilter::new(&config),
+        )
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -943,6 +1035,122 @@ mod tests {
 
     fn watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
         channel()
+    }
+
+    fn ignored_watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
+        channel_with_config(&ChannelConfig::default().with_watcher_config(
+            Config::default().with_ignored(|path, _| {
+                path.file_name().is_some_and(|name| name == "node_modules")
+            }),
+        ))
+    }
+
+    #[test]
+    fn ignored_missing_no_track_path_is_rejected() {
+        let tmpdir = testdir();
+        let path = tmpdir.path().join("node_modules");
+        let (mut watcher, _) = ignored_watcher();
+
+        let result = watcher.watcher.watch(
+            &path,
+            WatchMode {
+                recursive_mode: RecursiveMode::NonRecursive,
+                target_mode: TargetMode::NoTrack,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error {
+                kind: ErrorKind::PathNotFound,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ignored_directory_is_not_watched_and_produces_no_events() {
+        let tmpdir = testdir();
+        let ignored_dir = tmpdir.path().join("node_modules");
+        let dep = ignored_dir.join("dep.js");
+        let src = tmpdir.path().join("src.js");
+        std::fs::create_dir(&ignored_dir).expect("create dir");
+        std::fs::write(&dep, "").expect("create dep");
+        std::fs::write(&src, "").expect("create src");
+
+        let (mut watcher, rx) = ignored_watcher();
+        watcher.watch_recursively(&tmpdir);
+
+        let handles = watcher.get_watch_handles();
+        assert!(
+            handles.iter().all(|p| !p.starts_with(&ignored_dir)),
+            "no watch handle may exist under the ignored directory: {handles:#?}"
+        );
+
+        std::fs::write(&dep, b"123").expect("write dep");
+        std::fs::write(&src, b"123").expect("write src");
+
+        rx.wait_ordered_exact([
+            expected(tmpdir.path()).access_open_any().optional(),
+            expected(&src).access_open_any(),
+            expected(&src).modify_data_any().multiple(),
+            expected(&src).access_close_write(),
+        ])
+        .ensure_no_tail();
+    }
+
+    #[test]
+    fn directory_created_at_runtime_is_pruned_when_ignored() {
+        let tmpdir = testdir();
+
+        let (mut watcher, _rx) = ignored_watcher();
+        watcher.watch_recursively(&tmpdir);
+
+        let ignored_dir = tmpdir.path().join("node_modules");
+        let normal_dir = tmpdir.path().join("src");
+        std::fs::create_dir(&ignored_dir).expect("create ignored");
+        std::fs::create_dir(&normal_dir).expect("create normal");
+
+        // The sibling confirms event-driven registration ran.
+        assert!(
+            sleep_until(
+                || watcher.get_watch_handles().contains(&normal_dir),
+                Duration::from_secs(5)
+            ),
+            "the non-ignored sibling directory was never registered; handles: {:#?}",
+            watcher.get_watch_handles()
+        );
+        let handles = watcher.get_watch_handles();
+        assert!(
+            handles.iter().all(|p| !p.starts_with(&ignored_dir)),
+            "no watch handle may exist under the ignored directory: {handles:#?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_watched_root_is_ignored() {
+        let tmpdir = testdir();
+        let ignored_dir = tmpdir.path().join("node_modules");
+        let watched_dir = ignored_dir.join("pkg");
+        let dep = watched_dir.join("dep.js");
+        std::fs::create_dir_all(&watched_dir).expect("create dir");
+        std::fs::write(&dep, "").expect("create dep");
+
+        let (mut watcher, rx) = ignored_watcher();
+        watcher.watch_recursively(&watched_dir);
+
+        let handles = watcher.get_watch_handles();
+        assert!(handles.iter().all(|path| !path.starts_with(&ignored_dir)));
+
+        std::fs::write(&dep, b"123").expect("write");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        watcher
+            .watcher
+            .unwatch(&watched_dir)
+            .expect("unwatch ignored root");
     }
 
     #[test]

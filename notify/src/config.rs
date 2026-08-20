@@ -1,5 +1,8 @@
 //! Configuration types
 
+use std::fmt;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Default maximum number of paths to pass to FSEvents, chosen to stay
@@ -34,6 +37,17 @@ impl WatchMode {
         }
     }
 
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "windows",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "ios",
+        all(target_os = "macos", feature = "macos_kqueue")
+    ))]
     pub(crate) fn upgrade_with(&mut self, other: WatchMode) {
         self.recursive_mode = self.recursive_mode.upgraded_with(other.recursive_mode);
         self.target_mode = self.target_mode.upgraded_with(other.target_mode);
@@ -59,6 +73,17 @@ impl RecursiveMode {
         }
     }
 
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "windows",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "ios",
+        all(target_os = "macos", feature = "macos_kqueue")
+    ))]
     pub(crate) fn upgraded_with(self, other: Self) -> Self {
         match self {
             RecursiveMode::Recursive => self,
@@ -95,6 +120,17 @@ pub enum TargetMode {
 }
 
 impl TargetMode {
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "windows",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "ios",
+        all(target_os = "macos", feature = "macos_kqueue")
+    ))]
     pub(crate) fn upgraded_with(self, other: Self) -> Self {
         match self {
             TargetMode::TrackPath => self,
@@ -108,6 +144,22 @@ impl TargetMode {
         }
     }
 }
+
+/// Best-effort path type passed to [`Config::with_ignored`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// The path is a directory.
+    Dir,
+    /// The path is not a directory.
+    File,
+    /// The path type is unavailable.
+    Unknown,
+}
+
+/// Predicate installed with [`Config::with_ignored`].
+///
+/// Returning `true` excludes the path from watching.
+pub(crate) type IgnoredFilter = Arc<dyn Fn(&Path, EntryKind) -> bool + Send + Sync>;
 
 /// Watcher Backend configuration
 ///
@@ -123,7 +175,7 @@ impl TargetMode {
 /// ```
 ///
 /// Some options can be changed during runtime, others have to be set when creating the watcher backend.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone)]
 pub struct Config {
     /// See [Config::with_poll_interval]
     poll_interval: Option<Duration>,
@@ -135,6 +187,21 @@ pub struct Config {
 
     /// See [Config::with_max_fsevent_paths]
     max_fsevent_paths: usize,
+
+    /// See [Config::with_ignored]
+    ignored: Option<IgnoredFilter>,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("poll_interval", &self.poll_interval)
+            .field("compare_contents", &self.compare_contents)
+            .field("follow_symlinks", &self.follow_symlinks)
+            .field("max_fsevent_paths", &self.max_fsevent_paths)
+            .field("ignored", &self.ignored.is_some())
+            .finish()
+    }
 }
 
 impl Config {
@@ -235,6 +302,38 @@ impl Config {
     pub fn max_fsevent_paths(&self) -> usize {
         self.max_fsevent_paths
     }
+
+    /// Ignore paths for which the filter returns `true`.
+    ///
+    /// - Ignored directories exclude their entire subtree. Backends prune the
+    ///   traversal where possible; other backends filter the resulting events.
+    /// - Paths passed directly to `watch()` are also filtered.
+    /// - Paths are absolute. [`EntryKind::Unknown`] is used when the type is
+    ///   unavailable, such as after deletion.
+    /// - The filter runs on the watcher thread and must not block.
+    /// - Multi-path events are dropped only when every path is ignored.
+    ///
+    /// Recreate the watcher to change the filter.
+    #[must_use]
+    pub fn with_ignored(
+        mut self,
+        f: impl Fn(&Path, EntryKind) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.ignored = Some(Arc::new(f));
+        self
+    }
+
+    /// Returns the installed ignore filter, if any.
+    #[must_use]
+    pub(crate) fn ignored(&self) -> Option<&IgnoredFilter> {
+        self.ignored.as_ref()
+    }
+
+    pub(crate) fn clone_without_ignored(&self) -> Self {
+        let mut config = self.clone();
+        config.ignored = None;
+        config
+    }
 }
 
 impl Default for Config {
@@ -244,6 +343,7 @@ impl Default for Config {
             compare_contents: false,
             follow_symlinks: true,
             max_fsevent_paths: DEFAULT_MAX_FSEVENT_PATHS,
+            ignored: None,
         }
     }
 }
