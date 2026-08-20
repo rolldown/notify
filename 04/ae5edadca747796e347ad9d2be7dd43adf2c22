@@ -1,0 +1,19 @@
+notify/src/fsevent.rs
+  s_9cfd1038802213::t_d8feaf42807985 18-20,32,79-116,529-547,598-599,657-667,1686-1688,1690-1695,1697-1710,1714-1738
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04ae5edadca747796e347ad9d2be7dd43adf2c22",
+  "prompts": {},
+  "sessions": {
+    "s_9cfd1038802213": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a019c8-f1c4-75b2-a57b-8fa1ddd85415",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
