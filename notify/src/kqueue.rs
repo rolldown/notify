@@ -924,8 +924,9 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(&path).modify_meta_any().optional(),
-            expected(&path).modify_data_size().optional(),
             expected(&path).modify_data_any(),
+            expected(&path).modify_data_size(),
+            expected(&path).modify_meta_any().optional(),
         ])
         .ensure_no_tail();
         assert_eq!(
@@ -1060,8 +1061,10 @@ mod tests {
         std::fs::remove_file(&file).expect("remove");
 
         rx.wait_ordered_exact([
-            expected(file).remove_any(),
+            expected(&file).modify_any(),
+            expected(&file).remove_any(),
             expected(tmpdir.path()).modify_data_any(),
+            expected(&file).remove_any().optional().multiple(),
         ])
         .ensure_no_tail();
         assert_eq!(
@@ -1081,8 +1084,12 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_ordered_exact([expected(&file).remove_any()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([
+            expected(&file).modify_any(),
+            expected(&file).remove_any(),
+            expected(&file).remove_any().optional().multiple(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
@@ -1114,8 +1121,12 @@ mod tests {
 
         std::fs::remove_file(&file).expect("remove");
 
-        rx.wait_ordered_exact([expected(&file).remove_any()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([
+            expected(&file).modify_any(),
+            expected(&file).remove_any(),
+            expected(&file).remove_any().optional().multiple(),
+        ])
+        .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([]));
 
         std::fs::write(&file, "").expect("write");
@@ -1225,8 +1236,11 @@ mod tests {
         let path = tmpdir.path().join("entry");
         std::fs::create_dir(&path).expect("create");
 
-        rx.wait_ordered_exact([expected(&path).create_folder()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([
+            expected(&path).create_folder(),
+            expected(tmpdir.path()).modify_any(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), path]),
@@ -1290,8 +1304,12 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(tmpdir.path()).modify_data_any().optional(),
-            expected(path).remove_any(),
+            expected(&path).modify_any(),
+            expected(&path).remove_any(),
+            expected(&path).remove_any().optional().multiple(),
             expected(tmpdir.path()).modify_data_any().optional(),
+            expected(tmpdir.path()).modify_any(),
+            expected(&path).remove_any().optional().multiple(),
         ])
         .ensure_no_tail();
         assert_eq!(
@@ -1311,8 +1329,12 @@ mod tests {
         watcher.watch_recursively(&path);
         std::fs::remove_dir(&path).expect("remove");
 
-        rx.wait_ordered_exact([expected(&path).remove_any()])
-            .ensure_no_tail();
+        rx.wait_ordered_exact([
+            expected(&path).modify_any(),
+            expected(&path).remove_any(),
+            expected(&path).remove_any().optional().multiple(),
+        ])
+        .ensure_no_tail();
         assert_eq!(
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()]),
@@ -1350,8 +1372,10 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(tmpdir.path()).modify_data_any().optional(),
+            expected(&path).modify_any(),
             expected(&path).remove_any(),
             expected(tmpdir.path()).modify_data_any().optional(),
+            expected(&path).remove_any().optional().multiple(),
         ])
         .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([]),);
@@ -1531,8 +1555,9 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(&path).modify_meta_any().optional(),
-            expected(&path).modify_data_size().optional(),
             expected(&path).modify_data_any(),
+            expected(&path).modify_data_size(),
+            expected(&path).modify_meta_any().optional(),
         ])
         .ensure_no_tail();
         assert_eq!(
@@ -1562,8 +1587,9 @@ mod tests {
 
         rx.wait_ordered_exact([
             expected(&file).modify_meta_any().optional(),
-            expected(&file).modify_data_size().optional(),
             expected(&file).modify_data_any(),
+            expected(&file).modify_data_size(),
+            expected(&file).modify_meta_any().optional(),
         ])
         .ensure_no_tail();
         assert_eq!(watcher.get_watch_handles(), HashSet::from([subdir, file]));
