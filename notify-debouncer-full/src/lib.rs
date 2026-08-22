@@ -178,7 +178,22 @@ struct Queue {
     events: VecDeque<DebouncedEvent>,
 }
 
-type Queues = HashMap<PathBuf, Queue, FxBuildHasher>;
+/// Event queues keyed by path.
+///
+/// Keeping queue processing on this non-generic type lets all file ID cache implementations share
+/// the same machine code.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EventQueues {
+    by_path: HashMap<PathBuf, Queue, FxBuildHasher>,
+}
+
+impl FromIterator<(PathBuf, Queue)> for EventQueues {
+    fn from_iter<I: IntoIterator<Item = (PathBuf, Queue)>>(iter: I) -> Self {
+        Self {
+            by_path: iter.into_iter().collect(),
+        }
+    }
+}
 
 impl Queue {
     fn was_created(&self) -> bool {
@@ -202,7 +217,7 @@ impl Queue {
 
 #[derive(Debug)]
 pub(crate) struct DebounceDataInner<T> {
-    queues: Queues,
+    queues: EventQueues,
     /// Registered watch roots, kept **sorted by path** so that `add_root`
     /// can dedupe via binary search in O(log N) and doesn't suffer from injection
     roots: VecDeque<(PathBuf, WatchMode)>,
@@ -216,7 +231,7 @@ pub(crate) struct DebounceDataInner<T> {
 impl<T: FileIdCache> DebounceDataInner<T> {
     pub(crate) fn new(cache: T, timeout: Duration) -> Self {
         Self {
-            queues: HashMap::default(),
+            queues: EventQueues::default(),
             roots: VecDeque::new(),
             cache,
             rename_event: None,
@@ -228,7 +243,8 @@ impl<T: FileIdCache> DebounceDataInner<T> {
 
     /// Retrieve a vec of debounced events, removing them if not continuous
     pub fn debounced_events(&mut self) -> Vec<DebouncedEvent> {
-        take_debounced_events(&mut self.queues, &mut self.rescan_event, self.timeout)
+        self.queues
+            .debounced_events(&mut self.rescan_event, self.timeout)
     }
 
     /// Returns all currently stored errors
@@ -265,7 +281,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
 
                 self.cache.add_path(path, watch_mode);
 
-                push_event(&mut self.queues, event, now());
+                self.queues.push_event(event, now());
             }
             EventKind::Modify(ModifyKind::Name(rename_mode)) => {
                 #[expect(clippy::match_same_arms)]
@@ -304,7 +320,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
                     self.cache.add_path(path, watch_mode);
                 }
 
-                push_event(&mut self.queues, event, now());
+                self.queues.push_event(event, now());
             }
         }
     }
@@ -335,7 +351,7 @@ impl<T: FileIdCache> DebounceDataInner<T> {
 
         self.cache.remove_path(path);
 
-        push_event(&mut self.queues, event, time);
+        self.queues.push_event(event, time);
     }
 
     fn handle_rename_to(&mut self, event: Event) {
@@ -367,191 +383,200 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             let path = rename_event.paths.remove(0);
             let time = rename_event.time;
             self.cache.remove_path(&path);
-            push_rename_event(&mut self.queues, path, event, time);
+            self.queues.push_rename_event(path, event, time);
         } else {
             // move in
-            push_event(&mut self.queues, event, now());
+            self.queues.push_event(event, now());
         }
 
         self.rename_event = None;
     }
 
     fn push_remove_event(&mut self, event: Event, time: Instant) {
+        // remove cached file ids
+        self.cache.remove_path(&event.paths[0]);
+
+        self.queues.push_remove_event(event, time);
+    }
+}
+
+impl EventQueues {
+    #[inline(never)]
+    fn debounced_events(
+        &mut self,
+        rescan_event: &mut Option<DebouncedEvent>,
+        timeout: Duration,
+    ) -> Vec<DebouncedEvent> {
+        let now = now();
+        let mut events_expired = Vec::with_capacity(self.by_path.len());
+
+        if let Some(event) = rescan_event.take() {
+            if now.saturating_duration_since(event.time) >= timeout {
+                tracing::trace!("debounce candidate rescan event: {event:?}");
+                events_expired.push(event);
+            } else {
+                *rescan_event = Some(event);
+            }
+        }
+
+        // Visit each queue in place and remove only the ones that become empty.
+        self.by_path
+            .extract_if(|_, queue| {
+                let mut kind_index = HashMap::<EventKind, usize, FxBuildHasher>::default();
+                let mut queue_expired = Vec::new();
+
+                while let Some(event) = queue.events.pop_front() {
+                    if now.saturating_duration_since(event.time) >= timeout {
+                        tracing::trace!("debounce candidate event: {event:?}");
+
+                        if let Some(idx) = kind_index.insert(event.kind, queue_expired.len()) {
+                            tracing::trace!("removed candidate event: {:?}", queue_expired[idx]);
+                            queue_expired[idx] = None;
+                        }
+
+                        queue_expired.push(Some(event));
+                    } else {
+                        if let Some(&idx) = kind_index.get(&event.kind) {
+                            tracing::trace!("removed candidate event: {:?}", queue_expired[idx]);
+                            queue_expired[idx] = None;
+                        }
+                        queue.events.push_front(event);
+                        break;
+                    }
+                }
+
+                events_expired.extend(queue_expired.into_iter().flatten());
+
+                queue.events.is_empty()
+            })
+            .for_each(drop);
+
+        sort_events(events_expired)
+    }
+
+    #[inline(never)]
+    fn push_rename_event(&mut self, path: PathBuf, event: Event, time: Instant) {
+        let mut source_queue = self.by_path.remove(&path).unwrap_or_default();
+
+        // remove rename `from` event
+        source_queue.events.pop_back();
+
+        // remove existing rename event
+        let (remove_index, original_path, original_time) = source_queue
+            .events
+            .iter()
+            .enumerate()
+            .find_map(|(index, e)| {
+                if matches!(
+                    e.kind,
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+                ) {
+                    Some((Some(index), e.paths[0].clone(), e.time))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((None, path, time));
+
+        if let Some(remove_index) = remove_index {
+            source_queue.events.remove(remove_index);
+        }
+
+        // split off remove or move out event and add it back to the events map
+        if source_queue.was_removed() {
+            let event = source_queue.events.pop_front().unwrap();
+
+            self.by_path.insert(
+                event.paths[0].clone(),
+                Queue {
+                    events: [event].into(),
+                },
+            );
+        }
+
+        // update paths
+        for e in &mut source_queue.events {
+            e.paths = vec![event.paths[0].clone()];
+        }
+
+        // insert rename event at the front, unless the file was just created
+        if !source_queue.was_created() {
+            source_queue.events.push_front(DebouncedEvent {
+                event: Event {
+                    kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                    paths: vec![original_path, event.paths[0].clone()],
+                    attrs: event.attrs,
+                },
+                time: original_time,
+            });
+        }
+
+        if let Some(target_queue) = self.by_path.get_mut(&event.paths[0]) {
+            if !target_queue.was_created() {
+                let mut remove_event = DebouncedEvent {
+                    event: Event {
+                        kind: EventKind::Remove(RemoveKind::Any),
+                        paths: vec![event.paths[0].clone()],
+                        attrs: EventAttributes::default(),
+                    },
+                    time: original_time,
+                };
+                if !target_queue.was_removed() {
+                    remove_event.event = remove_event.event.set_info("override");
+                }
+                source_queue.events.push_front(remove_event);
+            }
+            *target_queue = source_queue;
+        } else {
+            self.by_path.insert(event.paths[0].clone(), source_queue);
+        }
+    }
+
+    #[inline(never)]
+    fn push_remove_event(&mut self, event: Event, time: Instant) {
         let path = &event.paths[0];
 
         // remove child queues
-        self.queues.retain(|p, _| !p.starts_with(path) || p == path);
+        self.by_path
+            .retain(|p, _| !p.starts_with(path) || p == path);
 
-        // remove cached file ids
-        self.cache.remove_path(path);
-
-        match self.queues.get_mut(path) {
+        match self.by_path.get_mut(path) {
             Some(queue) => {
                 queue.events = [DebouncedEvent::new(event, time)].into();
             }
             None => {
-                push_event(&mut self.queues, event, time);
+                self.push_event(event, time);
             }
         }
     }
-}
 
-// Keep cache-independent event processing non-generic so downstream cache implementations share
-// one copy of these routines.
-#[inline(never)]
-fn take_debounced_events(
-    queues: &mut Queues,
-    rescan_event: &mut Option<DebouncedEvent>,
-    timeout: Duration,
-) -> Vec<DebouncedEvent> {
-    let now = now();
-    let mut events_expired = Vec::with_capacity(queues.len());
+    #[inline(never)]
+    fn push_event(&mut self, event: Event, time: Instant) {
+        let path = &event.paths[0];
 
-    if let Some(event) = rescan_event.take() {
-        if now.saturating_duration_since(event.time) >= timeout {
-            tracing::trace!("debounce candidate rescan event: {event:?}");
-            events_expired.push(event);
+        if let Some(queue) = self.by_path.get_mut(path) {
+            // Skip duplicate create events and modifications right after creation.
+            // This code relies on backends never emitting a `Modify` event with kind other than `Name` for a rename event.
+            if match event.kind {
+                EventKind::Modify(
+                    ModifyKind::Any
+                    | ModifyKind::Data(_)
+                    | ModifyKind::Metadata(_)
+                    | ModifyKind::Other,
+                )
+                | EventKind::Create(_) => !queue.was_created(),
+                _ => true,
+            } {
+                queue.events.push_back(DebouncedEvent::new(event, time));
+            }
         } else {
-            *rescan_event = Some(event);
-        }
-    }
-
-    // Visit each queue in place and remove only the ones that become empty.
-    queues
-        .extract_if(|_, queue| {
-            let mut kind_index = HashMap::<EventKind, usize, FxBuildHasher>::default();
-            let mut queue_expired = Vec::new();
-
-            while let Some(event) = queue.events.pop_front() {
-                if now.saturating_duration_since(event.time) >= timeout {
-                    tracing::trace!("debounce candidate event: {event:?}");
-
-                    if let Some(idx) = kind_index.insert(event.kind, queue_expired.len()) {
-                        tracing::trace!("removed candidate event: {:?}", queue_expired[idx]);
-                        queue_expired[idx] = None;
-                    }
-
-                    queue_expired.push(Some(event));
-                } else {
-                    if let Some(&idx) = kind_index.get(&event.kind) {
-                        tracing::trace!("removed candidate event: {:?}", queue_expired[idx]);
-                        queue_expired[idx] = None;
-                    }
-                    queue.events.push_front(event);
-                    break;
-                }
-            }
-
-            events_expired.extend(queue_expired.into_iter().flatten());
-
-            queue.events.is_empty()
-        })
-        .for_each(drop);
-
-    sort_events(events_expired)
-}
-
-#[inline(never)]
-fn push_rename_event(queues: &mut Queues, path: PathBuf, event: Event, time: Instant) {
-    let mut source_queue = queues.remove(&path).unwrap_or_default();
-
-    // remove rename `from` event
-    source_queue.events.pop_back();
-
-    // remove existing rename event
-    let (remove_index, original_path, original_time) = source_queue
-        .events
-        .iter()
-        .enumerate()
-        .find_map(|(index, e)| {
-            if matches!(
-                e.kind,
-                EventKind::Modify(ModifyKind::Name(RenameMode::Both))
-            ) {
-                Some((Some(index), e.paths[0].clone(), e.time))
-            } else {
-                None
-            }
-        })
-        .unwrap_or((None, path, time));
-
-    if let Some(remove_index) = remove_index {
-        source_queue.events.remove(remove_index);
-    }
-
-    // split off remove or move out event and add it back to the events map
-    if source_queue.was_removed() {
-        let event = source_queue.events.pop_front().unwrap();
-
-        queues.insert(
-            event.paths[0].clone(),
-            Queue {
-                events: [event].into(),
-            },
-        );
-    }
-
-    // update paths
-    for e in &mut source_queue.events {
-        e.paths = vec![event.paths[0].clone()];
-    }
-
-    // insert rename event at the front, unless the file was just created
-    if !source_queue.was_created() {
-        source_queue.events.push_front(DebouncedEvent {
-            event: Event {
-                kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
-                paths: vec![original_path, event.paths[0].clone()],
-                attrs: event.attrs,
-            },
-            time: original_time,
-        });
-    }
-
-    if let Some(target_queue) = queues.get_mut(&event.paths[0]) {
-        if !target_queue.was_created() {
-            let mut remove_event = DebouncedEvent {
-                event: Event {
-                    kind: EventKind::Remove(RemoveKind::Any),
-                    paths: vec![event.paths[0].clone()],
-                    attrs: EventAttributes::default(),
+            self.by_path.insert(
+                path.clone(),
+                Queue {
+                    events: [DebouncedEvent::new(event, time)].into(),
                 },
-                time: original_time,
-            };
-            if !target_queue.was_removed() {
-                remove_event.event = remove_event.event.set_info("override");
-            }
-            source_queue.events.push_front(remove_event);
+            );
         }
-        *target_queue = source_queue;
-    } else {
-        queues.insert(event.paths[0].clone(), source_queue);
-    }
-}
-
-#[inline(never)]
-fn push_event(queues: &mut Queues, event: Event, time: Instant) {
-    let path = &event.paths[0];
-
-    if let Some(queue) = queues.get_mut(path) {
-        // Skip duplicate create events and modifications right after creation.
-        // This code relies on backends never emitting a `Modify` event with kind other than `Name` for a rename event.
-        if match event.kind {
-            EventKind::Modify(
-                ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Metadata(_) | ModifyKind::Other,
-            )
-            | EventKind::Create(_) => !queue.was_created(),
-            _ => true,
-        } {
-            queue.events.push_back(DebouncedEvent::new(event, time));
-        }
-    } else {
-        queues.insert(
-            path.clone(),
-            Queue {
-                events: [DebouncedEvent::new(event, time)].into(),
-            },
-        );
     }
 }
 
@@ -964,7 +989,7 @@ mod tests {
     #[test]
     fn recursive_mode_uses_recursive_root_for_overlapping_watches() {
         let state = DebounceDataInner {
-            queues: HashMap::default(),
+            queues: EventQueues::default(),
             roots: VecDeque::from([
                 (PathBuf::from("root"), WatchMode::non_recursive()),
                 (PathBuf::from("root/nested"), WatchMode::recursive()),
