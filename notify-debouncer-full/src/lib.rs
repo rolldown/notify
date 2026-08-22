@@ -200,11 +200,18 @@ impl Queue {
 
 #[derive(Debug)]
 pub(crate) struct DebounceDataInner<T> {
-    queues: HashMap<PathBuf, Queue, FxBuildHasher>,
+    state: DebounceState,
     /// Registered watch roots, kept **sorted by path** so that `add_root`
     /// can dedupe via binary search in O(log N) and doesn't suffer from injection
     roots: VecDeque<(PathBuf, WatchMode)>,
     cache: T,
+}
+
+/// Cache-independent debounce state. Keeping its heavier operations non-generic prevents
+/// downstream `DebounceDataInner<T>` instantiations from duplicating their machine code.
+#[derive(Debug)]
+struct DebounceState {
+    queues: HashMap<PathBuf, Queue, FxBuildHasher>,
     rename_event: Option<(DebouncedEvent, Option<FileId>)>,
     rescan_event: Option<DebouncedEvent>,
     errors: Vec<Error>,
@@ -214,9 +221,184 @@ pub(crate) struct DebounceDataInner<T> {
 impl<T: FileIdCache> DebounceDataInner<T> {
     pub(crate) fn new(cache: T, timeout: Duration) -> Self {
         Self {
-            queues: HashMap::default(),
+            state: DebounceState::new(timeout),
             roots: VecDeque::new(),
             cache,
+        }
+    }
+
+    /// Retrieve a vec of debounced events, removing them if not continuous
+    pub fn debounced_events(&mut self) -> Vec<DebouncedEvent> {
+        self.state.debounced_events()
+    }
+
+    /// Returns all currently stored errors
+    pub fn errors(&mut self) -> Vec<Error> {
+        std::mem::take(&mut self.state.errors)
+    }
+
+    /// Add an error entry to re-send later on
+    pub fn add_error(&mut self, error: Error) {
+        tracing::trace!("raw error: {error:?}");
+
+        self.state.errors.push(error);
+    }
+
+    /// Add new event to debouncer cache
+    pub fn add_event(&mut self, event: Event) {
+        tracing::trace!("raw event: {event:?}");
+
+        if event.need_rescan() {
+            let roots = self.roots.make_contiguous();
+            self.cache.rescan(roots);
+            self.state.rescan_event = Some(DebouncedEvent { event, time: now() });
+            return;
+        }
+
+        let Some(path) = event.paths.first() else {
+            tracing::info!("skipping event with no paths: {event:?}");
+            return;
+        };
+
+        match &event.kind {
+            EventKind::Create(_) => {
+                let watch_mode = self.watch_mode(path);
+
+                self.cache.add_path(path, watch_mode);
+
+                self.state.push_event(event, now());
+            }
+            EventKind::Modify(ModifyKind::Name(rename_mode)) => {
+                #[expect(clippy::match_same_arms)]
+                match rename_mode {
+                    RenameMode::Any => {
+                        if event.paths[0].exists() {
+                            self.handle_rename_to(event);
+                        } else {
+                            self.handle_rename_from(event);
+                        }
+                    }
+                    RenameMode::To => {
+                        self.handle_rename_to(event);
+                    }
+                    RenameMode::From => {
+                        self.handle_rename_from(event);
+                    }
+                    RenameMode::Both => {
+                        // ignore and handle `To` and `From` events instead
+                    }
+                    RenameMode::Other => {
+                        // unused
+                    }
+                }
+            }
+            EventKind::Remove(_) => {
+                self.push_remove_event(event, now());
+            }
+            EventKind::Other => {
+                // ignore meta events
+            }
+            _ => {
+                if self.cache.cached_file_id(path).is_none() {
+                    let watch_mode = self.watch_mode(path);
+
+                    self.cache.add_path(path, watch_mode);
+                }
+
+                self.state.push_event(event, now());
+            }
+        }
+    }
+
+    fn watch_mode(&self, path: &Path) -> WatchMode {
+        for ancestor in path.ancestors() {
+            if let Ok(index) = self
+                .roots
+                .binary_search_by(|(root, _)| root.as_path().cmp(ancestor))
+            {
+                return self.roots[index].1;
+            }
+        }
+
+        WatchMode {
+            recursive_mode: RecursiveMode::NonRecursive,
+            target_mode: TargetMode::TrackPath, // TODO: correct default?
+        }
+    }
+
+    fn handle_rename_from(&mut self, event: Event) {
+        let time = now();
+        let path = &event.paths[0];
+
+        // store event
+        let file_id = self.cache.cached_file_id(path).map(|id| *id.as_ref());
+        self.state.rename_event = Some((DebouncedEvent::new(event.clone(), time), file_id));
+
+        self.cache.remove_path(path);
+
+        self.state.push_event(event, time);
+    }
+
+    fn handle_rename_to(&mut self, event: Event) {
+        let watch_mode = self.watch_mode(&event.paths[0]);
+
+        self.cache.add_path(&event.paths[0], watch_mode);
+
+        let trackers_match = self.state.rename_tracker_matches(&event);
+
+        let file_ids_match = self
+            .state
+            .rename_event
+            .as_ref()
+            .and_then(|(_, id)| id.as_ref())
+            .and_then(|from_file_id| {
+                self.cache
+                    .cached_file_id(&event.paths[0])
+                    .map(|to_file_id| from_file_id == to_file_id.as_ref())
+            })
+            .unwrap_or_default();
+
+        if trackers_match || file_ids_match {
+            // connect rename
+            let (mut rename_event, _) = self.state.rename_event.take().unwrap(); // unwrap is safe because `rename_event` must be set at this point
+            let path = rename_event.paths.remove(0);
+            let time = rename_event.time;
+            self.cache.remove_path(&path);
+            self.state.push_rename_event(path, event, time);
+        } else {
+            // move in
+            self.state.push_event(event, now());
+        }
+
+        self.state.rename_event = None;
+    }
+
+    fn push_remove_event(&mut self, event: Event, time: Instant) {
+        let path = &event.paths[0];
+
+        // remove child queues
+        self.state
+            .queues
+            .retain(|p, _| !p.starts_with(path) || p == path);
+
+        // remove cached file ids
+        self.cache.remove_path(path);
+
+        match self.state.queues.get_mut(path) {
+            Some(queue) => {
+                queue.events = [DebouncedEvent::new(event, time)].into();
+            }
+            None => {
+                self.state.push_event(event, time);
+            }
+        }
+    }
+}
+
+impl DebounceState {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            queues: HashMap::default(),
             rename_event: None,
             rescan_event: None,
             errors: Vec::new(),
@@ -224,8 +406,16 @@ impl<T: FileIdCache> DebounceDataInner<T> {
         }
     }
 
-    /// Retrieve a vec of debounced events, removing them if not continuous
-    pub fn debounced_events(&mut self) -> Vec<DebouncedEvent> {
+    fn rename_tracker_matches(&self, event: &Event) -> bool {
+        self.rename_event
+            .as_ref()
+            .and_then(|(event, _)| event.tracker())
+            .zip(event.attrs.tracker())
+            .is_some_and(|(from, to)| from == to)
+    }
+
+    #[inline(never)]
+    fn debounced_events(&mut self) -> Vec<DebouncedEvent> {
         let now = now();
         let mut events_expired = Vec::with_capacity(self.queues.len());
 
@@ -273,158 +463,8 @@ impl<T: FileIdCache> DebounceDataInner<T> {
         sort_events(events_expired)
     }
 
-    /// Returns all currently stored errors
-    pub fn errors(&mut self) -> Vec<Error> {
-        std::mem::take(&mut self.errors)
-    }
-
-    /// Add an error entry to re-send later on
-    pub fn add_error(&mut self, error: Error) {
-        tracing::trace!("raw error: {error:?}");
-
-        self.errors.push(error);
-    }
-
-    /// Add new event to debouncer cache
-    pub fn add_event(&mut self, event: Event) {
-        tracing::trace!("raw event: {event:?}");
-
-        if event.need_rescan() {
-            let roots = self.roots.make_contiguous();
-            self.cache.rescan(roots);
-            self.rescan_event = Some(DebouncedEvent { event, time: now() });
-            return;
-        }
-
-        let Some(path) = event.paths.first() else {
-            tracing::info!("skipping event with no paths: {event:?}");
-            return;
-        };
-
-        match &event.kind {
-            EventKind::Create(_) => {
-                let watch_mode = self.watch_mode(path);
-
-                self.cache.add_path(path, watch_mode);
-
-                self.push_event(event, now());
-            }
-            EventKind::Modify(ModifyKind::Name(rename_mode)) => {
-                #[expect(clippy::match_same_arms)]
-                match rename_mode {
-                    RenameMode::Any => {
-                        if event.paths[0].exists() {
-                            self.handle_rename_to(event);
-                        } else {
-                            self.handle_rename_from(event);
-                        }
-                    }
-                    RenameMode::To => {
-                        self.handle_rename_to(event);
-                    }
-                    RenameMode::From => {
-                        self.handle_rename_from(event);
-                    }
-                    RenameMode::Both => {
-                        // ignore and handle `To` and `From` events instead
-                    }
-                    RenameMode::Other => {
-                        // unused
-                    }
-                }
-            }
-            EventKind::Remove(_) => {
-                self.push_remove_event(event, now());
-            }
-            EventKind::Other => {
-                // ignore meta events
-            }
-            _ => {
-                if self.cache.cached_file_id(path).is_none() {
-                    let watch_mode = self.watch_mode(path);
-
-                    self.cache.add_path(path, watch_mode);
-                }
-
-                self.push_event(event, now());
-            }
-        }
-    }
-
-    fn watch_mode(&self, path: &Path) -> WatchMode {
-        for ancestor in path.ancestors() {
-            if let Ok(index) = self
-                .roots
-                .binary_search_by(|(root, _)| root.as_path().cmp(ancestor))
-            {
-                return self.roots[index].1;
-            }
-        }
-
-        WatchMode {
-            recursive_mode: RecursiveMode::NonRecursive,
-            target_mode: TargetMode::TrackPath, // TODO: correct default?
-        }
-    }
-
-    fn handle_rename_from(&mut self, event: Event) {
-        let time = now();
-        let path = &event.paths[0];
-
-        // store event
-        let file_id = self.cache.cached_file_id(path).map(|id| *id.as_ref());
-        self.rename_event = Some((DebouncedEvent::new(event.clone(), time), file_id));
-
-        self.cache.remove_path(path);
-
-        self.push_event(event, time);
-    }
-
-    fn handle_rename_to(&mut self, event: Event) {
-        let watch_mode = self.watch_mode(&event.paths[0]);
-
-        self.cache.add_path(&event.paths[0], watch_mode);
-
-        let trackers_match = self
-            .rename_event
-            .as_ref()
-            .and_then(|(e, _)| e.tracker())
-            .and_then(|from_tracker| {
-                event
-                    .attrs
-                    .tracker()
-                    .map(|to_tracker| from_tracker == to_tracker)
-            })
-            .unwrap_or_default();
-
-        let file_ids_match = self
-            .rename_event
-            .as_ref()
-            .and_then(|(_, id)| id.as_ref())
-            .and_then(|from_file_id| {
-                self.cache
-                    .cached_file_id(&event.paths[0])
-                    .map(|to_file_id| from_file_id == to_file_id.as_ref())
-            })
-            .unwrap_or_default();
-
-        if trackers_match || file_ids_match {
-            // connect rename
-            let (mut rename_event, _) = self.rename_event.take().unwrap(); // unwrap is safe because `rename_event` must be set at this point
-            let path = rename_event.paths.remove(0);
-            let time = rename_event.time;
-            self.push_rename_event(path, event, time);
-        } else {
-            // move in
-            self.push_event(event, now());
-        }
-
-        self.rename_event = None;
-    }
-
+    #[inline(never)]
     fn push_rename_event(&mut self, path: PathBuf, event: Event, time: Instant) {
-        self.cache.remove_path(&path);
-
         let mut source_queue = self.queues.remove(&path).unwrap_or_default();
 
         // remove rename `from` event
@@ -498,25 +538,6 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             *target_queue = source_queue;
         } else {
             self.queues.insert(event.paths[0].clone(), source_queue);
-        }
-    }
-
-    fn push_remove_event(&mut self, event: Event, time: Instant) {
-        let path = &event.paths[0];
-
-        // remove child queues
-        self.queues.retain(|p, _| !p.starts_with(path) || p == path);
-
-        // remove cached file ids
-        self.cache.remove_path(path);
-
-        match self.queues.get_mut(path) {
-            Some(queue) => {
-                queue.events = [DebouncedEvent::new(event, time)].into();
-            }
-            None => {
-                self.push_event(event, time);
-            }
         }
     }
 
@@ -895,15 +916,15 @@ mod tests {
         let expected_events = std::mem::take(&mut test_case.expected.events);
         let expected_state = test_case.expected.into_debounce_data_inner(time);
         assert_eq!(
-            state.queues, expected_state.queues,
+            state.state.queues, expected_state.state.queues,
             "queues not as expected"
         );
         assert_eq!(
-            state.rename_event, expected_state.rename_event,
+            state.state.rename_event, expected_state.state.rename_event,
             "rename event not as expected"
         );
         assert_eq!(
-            state.rescan_event, expected_state.rescan_event,
+            state.state.rescan_event, expected_state.state.rescan_event,
             "rescan event not as expected"
         );
         assert_eq!(
@@ -913,6 +934,7 @@ mod tests {
 
         assert_eq!(
             state
+                .state
                 .errors
                 .iter()
                 .map(|e| format!("{e:?}"))
@@ -925,11 +947,11 @@ mod tests {
         );
 
         let backup_time = now();
-        let backup_queues = state.queues.clone();
+        let backup_queues = state.state.queues.clone();
 
         for (delay, events) in expected_events {
             MockTime::set_time(backup_time);
-            state.queues = backup_queues.clone();
+            state.state.queues = backup_queues.clone();
 
             match delay.as_str() {
                 "none" => {}
@@ -958,16 +980,12 @@ mod tests {
     #[test]
     fn recursive_mode_uses_recursive_root_for_overlapping_watches() {
         let state = DebounceDataInner {
-            queues: HashMap::default(),
+            state: DebounceState::new(Duration::from_millis(50)),
             roots: VecDeque::from([
                 (PathBuf::from("root"), WatchMode::non_recursive()),
                 (PathBuf::from("root/nested"), WatchMode::recursive()),
             ]),
             cache: NoCache,
-            rename_event: None,
-            rescan_event: None,
-            errors: Vec::new(),
-            timeout: Duration::from_millis(50),
         };
 
         assert_eq!(

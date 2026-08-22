@@ -13,7 +13,7 @@ use notify::{
     },
 };
 
-use crate::{DebounceDataInner, DebouncedEvent, FileIdCache, Queue};
+use crate::{DebounceDataInner, DebounceState, DebouncedEvent, FileIdCache, Queue};
 
 pub(crate) use schema::TestCase;
 
@@ -266,13 +266,15 @@ impl schema::State {
             .map(|e| e.into_debounced_event(time, None));
 
         DebounceDataInner {
-            queues,
+            state: DebounceState {
+                queues,
+                rename_event,
+                rescan_event,
+                errors: Vec::new(),
+                timeout: Duration::from_millis(self.timeout.unwrap_or(50)),
+            },
             roots: VecDeque::new(),
             cache,
-            rename_event,
-            rescan_event,
-            errors: Vec::new(),
-            timeout: Duration::from_millis(self.timeout.unwrap_or(50)),
         }
     }
 }
