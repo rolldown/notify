@@ -262,7 +262,10 @@ impl<T: FileIdCache> DebounceDataInner<T> {
                 }
             }
             EventKind::Remove(_) => {
-                self.push_remove_event(event, now());
+                let time = now();
+                // remove cached file ids
+                self.cache.remove_path(&event.paths[0]);
+                self.queues.push_remove_event(event, time);
             }
             EventKind::Other => {
                 // ignore meta events
@@ -335,22 +338,15 @@ impl<T: FileIdCache> DebounceDataInner<T> {
             // connect rename
             let (mut rename_event, _) = self.rename_event.take().unwrap(); // unwrap is safe because `rename_event` must be set at this point
             let path = rename_event.paths.remove(0);
-            let time = rename_event.time;
             self.cache.remove_path(&path);
-            self.queues.push_rename_event(path, event, time);
+            self.queues
+                .push_rename_event(path, event, rename_event.time);
         } else {
             // move in
             self.queues.push_event(event, now());
         }
 
         self.rename_event = None;
-    }
-
-    fn push_remove_event(&mut self, event: Event, time: Instant) {
-        // remove cached file ids
-        self.cache.remove_path(&event.paths[0]);
-
-        self.queues.push_remove_event(event, time);
     }
 }
 
