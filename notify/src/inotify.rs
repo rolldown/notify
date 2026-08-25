@@ -599,14 +599,9 @@ impl EventLoop {
                 path.display()
             );
             if need_to_watch_parent_newly && let Some(parent) = path.parent() {
-                self.add_single_watch(parent.to_path_buf(), true, false)?;
+                self.add_single_watch(parent.to_path_buf(), false, false)?;
             }
-            if !need_upgrade_to_recursive {
-                return Ok(());
-            }
-
-            // upgrade to recursive
-            if metadata(&path).map_err(Error::io)?.is_dir() {
+            if need_upgrade_to_recursive && metadata(&path).map_err(Error::io)?.is_dir() {
                 self.add_maybe_recursive_watch(path.clone(), true, false, true)?;
             }
             self.watches
@@ -619,7 +614,7 @@ impl EventLoop {
         if watch_mode.target_mode == TargetMode::TrackPath
             && let Some(parent) = path.parent()
         {
-            self.add_single_watch(parent.to_path_buf(), true, false)?;
+            self.add_single_watch(parent.to_path_buf(), false, false)?;
         }
 
         let meta = match metadata(&path).map_err(Error::io_watch) {
@@ -939,7 +934,12 @@ mod tests {
 
     use super::{Config, Error, ErrorKind, Event, INotifyWatcher, Result, Watcher};
 
-    use crate::{RecursiveMode, TargetMode, config::WatchMode, test::*};
+    use crate::{
+        RecursiveMode, TargetMode,
+        config::WatchMode,
+        event::{EventKind, ModifyKind},
+        test::*,
+    };
 
     fn watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
         channel()
@@ -1485,6 +1485,74 @@ mod tests {
             watcher.get_watch_handles(),
             HashSet::from([tmpdir.to_path_buf()])
         );
+    }
+
+    fn assert_track_path_continues_after_recreating_file_in_nested_directory(
+        upgrade_from_no_track: bool,
+    ) {
+        let tmpdir = testdir();
+        let (mut watcher, mut rx) = watcher();
+        let nested_dir = tmpdir.path().join("nested");
+        let watched_file = nested_dir.join("watched");
+        let moved_file = tmpdir.path().join("moved");
+        std::fs::create_dir(&nested_dir).expect("create nested dir");
+        std::fs::write(&watched_file, "initial").expect("write watched file");
+
+        watcher.watch_nonrecursively(&tmpdir);
+        if upgrade_from_no_track {
+            watcher.watch(
+                &watched_file,
+                WatchMode {
+                    recursive_mode: RecursiveMode::NonRecursive,
+                    target_mode: TargetMode::NoTrack,
+                },
+            );
+        }
+        watcher.watch_nonrecursively(&watched_file);
+        let mut expected_handles = HashSet::from([
+            tmpdir.parent_path_buf(),
+            tmpdir.to_path_buf(),
+            nested_dir.clone(),
+        ]);
+        if upgrade_from_no_track {
+            expected_handles.insert(watched_file.clone());
+        }
+        assert_eq!(watcher.get_watch_handles(), expected_handles);
+
+        std::fs::rename(&watched_file, &moved_file).expect("move watched file");
+        std::fs::copy(&moved_file, &watched_file).expect("recreate watched file");
+        std::fs::remove_file(&moved_file).expect("remove moved file");
+
+        // Wait until the replacement events are drained before checking the next write.
+        for _ in rx.iter() {}
+
+        std::fs::write(&watched_file, "updated").expect("update watched file");
+        let received_change = rx.iter().any(|event| {
+            event.paths.iter().any(|path| path == &watched_file)
+                && matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Data(_))
+                )
+        });
+
+        assert!(
+            received_change,
+            "expected a change event after recreating the watched file"
+        );
+        assert_eq!(
+            watcher.get_watch_handles(),
+            HashSet::from([tmpdir.parent_path_buf(), tmpdir.to_path_buf(), nested_dir,])
+        );
+    }
+
+    #[test]
+    fn track_path_continues_after_recreating_file_in_nested_directory() {
+        assert_track_path_continues_after_recreating_file_in_nested_directory(false);
+    }
+
+    #[test]
+    fn track_path_upgrade_continues_after_recreating_file_in_nested_directory() {
+        assert_track_path_continues_after_recreating_file_in_nested_directory(true);
     }
 
     #[test]

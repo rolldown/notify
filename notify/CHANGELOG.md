@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [10.5.1](https://github.com/rolldown/notify/compare/rolldown-notify-v10.5.0...rolldown-notify-v10.5.1) - 2026-08-20
+
+### Fixed
+
+- *(fsevent)* refuse to create a stream that would corrupt the process ([#113](https://github.com/rolldown/notify/pull/113))
+- keep TrackPath watches after atomic replacement ([#112](https://github.com/rolldown/notify/pull/112))
+
+### Other
+
+- *(deps)* update rust crates ([#110](https://github.com/rolldown/notify/pull/110))
+
 ## [10.5.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.4.0...rolldown-notify-v10.5.0) - 2026-06-15
 
 ### Added
