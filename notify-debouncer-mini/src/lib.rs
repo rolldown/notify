@@ -107,7 +107,7 @@ pub trait DebounceEventHandler: Send + 'static {
 /// let config = Config::default().with_timeout(Duration::from_secs(1)).with_batch_mode(true)
 ///     .with_notify_config(backend_config);
 /// ```
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Config {
     timeout: Duration,
     batch_mode: bool,
@@ -350,7 +350,6 @@ impl<T: Watcher> Drop for Debouncer<T> {
 }
 
 /// Creates a new debounced watcher with custom configuration.
-#[expect(clippy::needless_pass_by_value)]
 #[tracing::instrument(level = "debug", skip(event_handler))]
 pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
     config: Config,
