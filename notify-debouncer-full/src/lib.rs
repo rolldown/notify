@@ -556,7 +556,11 @@ pub fn new_debouncer<F: DebounceEventHandler>(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, time::Duration};
+    use std::{
+        fs,
+        path::Path,
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -564,7 +568,7 @@ mod tests {
     use rstest::rstest;
     use tempfile::tempdir;
     use testing::TestCase;
-    use time::{Instant, MockTime};
+    use time::MockTime;
 
     #[rstest]
     fn state(
