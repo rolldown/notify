@@ -564,7 +564,7 @@ mod tests {
     use rstest::rstest;
     use tempfile::tempdir;
     use testing::TestCase;
-    use time::MockTime;
+    use time::{Instant, MockTime};
 
     #[rstest]
     fn state(
