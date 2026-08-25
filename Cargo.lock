@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-debouncer-full"
-version = "0.7.10"
+version = "0.7.11"
 dependencies = [
  "crossbeam-channel",
  "deser-hjson",
