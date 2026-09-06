@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify"
-version = "10.5.1"
+version = "10.5.2"
 dependencies = [
  "bitflags",
  "criterion",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-debouncer-full"
-version = "0.7.11"
+version = "0.7.12"
 dependencies = [
  "crossbeam-channel",
  "deser-hjson",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-debouncer-mini"
-version = "0.8.10"
+version = "0.8.11"
 dependencies = [
  "crossbeam-channel",
  "flume",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "rolldown-notify-types"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "insta",
  "rstest",
