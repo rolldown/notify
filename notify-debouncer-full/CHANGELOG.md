@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.7.11...rolldown-notify-debouncer-full-v0.7.12) - 2026-09-06
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.7.11](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-full-v0.7.10...rolldown-notify-debouncer-full-v0.7.11) - 2026-08-25
 
 ### Other
