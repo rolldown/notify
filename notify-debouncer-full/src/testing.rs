@@ -13,7 +13,7 @@ use notify::{
     },
 };
 
-use crate::{DebounceDataInner, DebouncedEvent, FileIdCache, Queue};
+use crate::{DebounceDataInner, DebouncedEvent, FileIdCache, event_queues::Queue};
 
 pub(crate) use schema::TestCase;
 
