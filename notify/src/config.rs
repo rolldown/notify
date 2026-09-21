@@ -1,6 +1,7 @@
 //! Configuration types
 
-use std::time::Duration;
+use crate::filter::{EntryKind, IgnoreFilter};
+use std::{path::Path, time::Duration};
 
 /// Default maximum number of paths to pass to FSEvents, chosen to stay
 /// well under the macOS default file descriptor soft limit (256).
@@ -123,7 +124,7 @@ impl TargetMode {
 /// ```
 ///
 /// Some options can be changed during runtime, others have to be set when creating the watcher backend.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct Config {
     /// See [Config::with_poll_interval]
     poll_interval: Option<Duration>,
@@ -135,6 +136,9 @@ pub struct Config {
 
     /// See [Config::with_max_fsevent_paths]
     max_fsevent_paths: usize,
+
+    /// See [Config::with_ignored]
+    ignored: IgnoreFilter,
 }
 
 impl Config {
@@ -235,6 +239,53 @@ impl Config {
     pub fn max_fsevent_paths(&self) -> usize {
         self.max_fsevent_paths
     }
+
+    /// Ignore the paths for which `ignored` returns `true`.
+    ///
+    /// An ignored path is treated as if it did not exist: it is not watched, not scanned and
+    /// never reported in an event. Ignoring a directory ignores everything below it.
+    ///
+    /// ```
+    /// use notify::{Config, EntryKind};
+    ///
+    /// // ignore all `node_modules` directories
+    /// let config = Config::default().with_ignored(|path, kind| {
+    ///     // the kind is not always known, see below
+    ///     kind != EntryKind::File && path.file_name().is_some_and(|name| name == "node_modules")
+    /// });
+    /// ```
+    ///
+    /// - The filter applies to all paths, including the ones passed to
+    ///   [`Watcher::watch`](crate::Watcher::watch): watching or unwatching a path that is ignored,
+    ///   or that lies below an ignored directory, succeeds but does nothing.
+    /// - The filter is asked about one path at a time, in the same form as the path is reported
+    ///   in events. It does not have to test the parent directories, the watcher does that.
+    /// - [`EntryKind::Unknown`] is passed if the watcher cannot tell whether the path is a
+    ///   directory, for example for a watched path that does not exist, and for all events on
+    ///   Windows.
+    /// - Backends that walk the file tree (inotify, kqueue and poll) do not descend into ignored
+    ///   directories, which saves their watch resources. FSEvents and Windows watch recursively
+    ///   inside the kernel, so they can only drop the events of ignored paths.
+    /// - A rename between an ignored and a non-ignored path is reported like a rename out of
+    ///   or into the watched directory.
+    /// - The filter runs on the watcher thread. It must be fast, must not block and must always
+    ///   return the same answer for the same arguments.
+    ///
+    /// The filter cannot be changed later, create a new watcher instead.
+    #[must_use]
+    pub fn with_ignored(
+        mut self,
+        ignored: impl Fn(&Path, EntryKind) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.ignored = IgnoreFilter::new(ignored);
+        self
+    }
+
+    /// Returns current setting.
+    #[must_use]
+    pub fn ignored(&self) -> &IgnoreFilter {
+        &self.ignored
+    }
 }
 
 impl Default for Config {
@@ -244,6 +295,7 @@ impl Default for Config {
             compare_contents: false,
             follow_symlinks: true,
             max_fsevent_paths: DEFAULT_MAX_FSEVENT_PATHS,
+            ignored: IgnoreFilter::default(),
         }
     }
 }

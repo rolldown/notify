@@ -7,6 +7,7 @@
 use super::event::*;
 use super::{Config, Error, ErrorKind, EventHandler, RecursiveMode, Result, WatchMode, Watcher};
 use crate::bimap::BiHashMap;
+use crate::filter::{EntryKind, IgnoreFilter};
 use crate::{BoundSender, Receiver, Sender, TargetMode, bounded, unbounded};
 use inotify as inotify_sys;
 use inotify_sys::{EventMask, Inotify, WatchDescriptor, WatchMask};
@@ -49,6 +50,7 @@ struct EventLoop {
     >,
     rename_event: Option<Event>,
     follow_links: bool,
+    ignore_filter: IgnoreFilter,
 }
 
 /// Watcher implementation based on inotify
@@ -121,6 +123,7 @@ impl EventLoop {
         inotify: Inotify,
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        ignore_filter: IgnoreFilter,
     ) -> Result<Self> {
         let (event_loop_tx, event_loop_rx) = unbounded::<EventLoopMsg>();
         let poll = mio::Poll::new()?;
@@ -144,6 +147,7 @@ impl EventLoop {
             watch_handles: BiHashMap::default(),
             rename_event: None,
             follow_links,
+            ignore_filter,
         };
         Ok(event_loop)
     }
@@ -304,6 +308,17 @@ impl EventLoop {
                                 tracing::debug!(?event, "inotify event with unknown descriptor");
                                 continue;
                             };
+
+                            // The watched directories are not ignored, but their entries can be.
+                            // An ignored entry is handled as if it did not exist.
+                            let kind = if event.mask.contains(EventMask::ISDIR) {
+                                EntryKind::Dir
+                            } else {
+                                EntryKind::File
+                            };
+                            if event.name.is_some() && self.ignore_filter.matches(&path, kind) {
+                                continue;
+                            }
 
                             let mut evs = Vec::new();
 
@@ -581,6 +596,11 @@ impl EventLoop {
 
     #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
+        // an ignored path is not watched
+        if self.ignore_filter.is_path_ignored(&path) {
+            return Ok(());
+        }
+
         if let Some(existing) = self.watches.get(&path) {
             let need_upgrade_to_recursive = match existing.recursive_mode {
                 RecursiveMode::Recursive => false,
@@ -653,9 +673,9 @@ impl EventLoop {
         mut watch_self: bool,
     ) -> Result<()> {
         if is_recursive {
-            for entry in WalkDir::new(&path)
-                .follow_links(self.follow_links)
-                .into_iter()
+            for entry in self
+                .ignore_filter
+                .walk(WalkDir::new(&path).follow_links(self.follow_links))
                 .filter_map(filter_dir)
             {
                 self.add_single_watch(entry.into_path(), false, watch_self)?;
@@ -739,6 +759,8 @@ impl EventLoop {
     #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
         match self.watches.remove(&path) {
+            // watching an ignored path does nothing, and so does unwatching it
+            None if self.ignore_filter.is_path_ignored(&path) => {}
             None => return Err(Error::watch_not_found().add_path(path)),
             Some(watch_mode) => {
                 self.remove_maybe_recursive_watch(
@@ -821,9 +843,10 @@ impl INotifyWatcher {
     fn from_event_handler(
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        ignore_filter: IgnoreFilter,
     ) -> Result<Self> {
         let inotify = Inotify::init()?;
-        let event_loop = EventLoop::new(inotify, event_handler, follow_links)?;
+        let event_loop = EventLoop::new(inotify, event_handler, follow_links, ignore_filter)?;
         let channel = event_loop.event_loop_tx.clone();
         let waker = Arc::clone(&event_loop.event_loop_waker);
         event_loop.run();
@@ -867,7 +890,11 @@ impl Watcher for INotifyWatcher {
     /// Create a new watcher.
     #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
-        Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
+        Self::from_event_handler(
+            Box::new(event_handler),
+            config.follow_symlinks(),
+            config.ignored().clone(),
+        )
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -943,6 +970,52 @@ mod tests {
 
     fn watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
         channel()
+    }
+
+    fn ignoring_watcher() -> (TestWatcher<INotifyWatcher>, Receiver) {
+        ignoring_channel()
+    }
+
+    #[test]
+    fn ignored_directory_is_not_watched() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).expect("create dir");
+        std::fs::create_dir(root.join("src")).expect("create dir");
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_recursively(root);
+
+        assert_eq!(
+            watcher.get_watch_handles_in(root),
+            HashSet::from([root.to_path_buf(), root.join("src")])
+        );
+    }
+
+    #[test]
+    fn ignored_directory_created_at_runtime_is_not_watched() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_recursively(root);
+
+        std::fs::create_dir(root.join("node_modules")).expect("create dir");
+        // created last, so the ignored directory has been seen once it is watched
+        std::fs::create_dir(root.join("src")).expect("create dir");
+
+        assert!(
+            sleep_until(
+                || watcher.get_watch_handles().contains(&root.join("src")),
+                Duration::from_secs(5)
+            ),
+            "the new directory was never watched: {:#?}",
+            watcher.get_watch_handles()
+        );
+        assert_eq!(
+            watcher.get_watch_handles_in(root),
+            HashSet::from([root.to_path_buf(), root.join("src")])
+        );
     }
 
     #[test]

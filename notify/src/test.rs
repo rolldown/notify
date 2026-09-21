@@ -277,6 +277,13 @@ pub struct ChannelConfig {
     watcher_config: Config,
 }
 
+impl ChannelConfig {
+    pub fn with_watcher_config(mut self, config: Config) -> Self {
+        self.watcher_config = config;
+        self
+    }
+}
+
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
@@ -311,6 +318,13 @@ impl<W: Watcher> TestWatcher<W> {
     pub fn get_watch_handles(&self) -> HashSet<PathBuf> {
         self.watcher.get_watch_handles()
     }
+
+    /// The watch handles at and below `root`, without the parent that may be watched to track it
+    pub fn get_watch_handles_in(&self, root: &Path) -> HashSet<PathBuf> {
+        let mut handles = self.get_watch_handles();
+        handles.retain(|path| path.starts_with(root));
+        handles
+    }
 }
 
 /// Calls the provided closure
@@ -343,7 +357,7 @@ pub fn sleep_until<F: FnMut() -> bool>(mut check: F, timeout: Duration) -> bool 
 /// Creates a [`TestWatcher`] and connected [`Receiver`]
 pub fn channel_with_config<W: Watcher>(config: &ChannelConfig) -> (TestWatcher<W>, Receiver) {
     let (tx, rx) = mpsc::channel();
-    let watcher = W::new(tx, config.watcher_config).expect("Unable to create a watcher");
+    let watcher = W::new(tx, config.watcher_config.clone()).expect("Unable to create a watcher");
     (
         TestWatcher {
             watcher,
@@ -356,6 +370,22 @@ pub fn channel_with_config<W: Watcher>(config: &ChannelConfig) -> (TestWatcher<W
             kind: W::kind(),
         },
     )
+}
+
+/// Whether the filter of [`ignoring_config`] matches the path
+pub fn is_ignored(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "node_modules")
+        || path.extension().is_some_and(|extension| extension == "log")
+}
+
+/// Creates a [`Config`] that ignores everything named `node_modules` and all `*.log` files
+pub fn ignoring_config() -> Config {
+    Config::default().with_ignored(|path, _| is_ignored(path))
+}
+
+/// Creates a [`TestWatcher`] and connected [`Receiver`] with [`ignoring_config`]
+pub fn ignoring_channel<W: Watcher>() -> (TestWatcher<W>, Receiver) {
+    channel_with_config(&ChannelConfig::default().with_watcher_config(ignoring_config()))
 }
 
 /// Creates a [`TestWatcher`] and connected [`Receiver`]
@@ -372,14 +402,17 @@ pub fn recommended_channel() -> (TestWatcher<RecommendedWatcher>, Receiver) {
 ///
 /// Returned [`Receiver`] will send a message to poll changes before wait-methods
 pub fn poll_watcher_channel() -> (TestWatcher<PollWatcher>, Receiver) {
-    let (tx, rx) = mpsc::channel();
-    let watcher = PollWatcher::new(
-        tx,
+    poll_watcher_channel_with_config(
         Config::default()
             .with_compare_contents(true)
             .with_manual_polling(),
     )
-    .expect("Unable to create PollWatcher");
+}
+
+/// Like [`poll_watcher_channel`], with a caller-provided watcher config.
+pub fn poll_watcher_channel_with_config(config: Config) -> (TestWatcher<PollWatcher>, Receiver) {
+    let (tx, rx) = mpsc::channel();
+    let watcher = PollWatcher::new(tx, config).expect("Unable to create PollWatcher");
     let sender = watcher.poll_sender();
     let watcher = TestWatcher {
         watcher,
