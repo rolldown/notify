@@ -286,6 +286,14 @@ impl Config {
     pub fn ignored(&self) -> &IgnoreFilter {
         &self.ignored
     }
+
+    /// Returns a copy that does not keep the ignore filter, and what it captured, alive.
+    pub(crate) fn without_ignored(&self) -> Self {
+        Self {
+            ignored: IgnoreFilter::default(),
+            ..self.clone()
+        }
+    }
 }
 
 impl Default for Config {

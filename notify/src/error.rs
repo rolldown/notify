@@ -109,9 +109,12 @@ impl Error {
     }
 
     /// Creates a new "invalid config" error from the given `Config`.
+    ///
+    /// The error does not keep the filter of [`Config::with_ignored`], an error may outlive the
+    /// watcher by far.
     #[must_use]
     pub fn invalid_config(config: &Config) -> Self {
-        Self::new(ErrorKind::InvalidConfig(config.clone()))
+        Self::new(ErrorKind::InvalidConfig(config.without_ignored()))
     }
 }
 
@@ -177,4 +180,20 @@ fn display_formatted_errors() {
         expected,
         format!("{}", Error::io(io::Error::other(expected)))
     );
+}
+
+#[test]
+fn invalid_config_does_not_keep_ignore_filter() {
+    use std::sync::Arc;
+
+    let captured = Arc::new(());
+    let config = Config::default().with_ignored({
+        let captured = Arc::clone(&captured);
+        move |_, _| Arc::strong_count(&captured) > 0
+    });
+    let error = Error::invalid_config(&config);
+    drop(config);
+
+    assert_eq!(Arc::strong_count(&captured), 1);
+    assert!(matches!(error.kind, ErrorKind::InvalidConfig(_)));
 }
