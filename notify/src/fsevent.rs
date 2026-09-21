@@ -15,6 +15,7 @@
 #![allow(non_upper_case_globals, dead_code)]
 
 use crate::consolidating_path_trie::ConsolidatingPathTrie;
+use crate::filter::{EntryKind, IgnoreFilter};
 use crate::{
     Config, Error, ErrorKind, EventHandler, PathsMut, Result, Sender, WatchMode, Watcher, unbounded,
 };
@@ -73,7 +74,10 @@ pub struct FsEventWatcher {
     event_handler: Arc<Mutex<dyn EventHandler>>,
     runloop: Option<(cf::CFRetained<cf::CFRunLoop>, thread::JoinHandle<()>)>,
     watches: HashMap<PathBuf, bool, FxBuildHasher>,
+    /// Ignored paths that have been passed to `watch()`. They are not watched.
+    ignored_watches: HashSet<PathBuf, FxBuildHasher>,
     max_fsevent_paths: usize,
+    ignore_filter: IgnoreFilter,
 }
 
 // FSEvents applies the path limit across live streams, so all watcher instances
@@ -124,6 +128,9 @@ impl fmt::Debug for FsEventWatcher {
             .field("event_handler", &Arc::as_ptr(&self.event_handler))
             .field("runloop", &self.runloop)
             .field("watches", &self.watches)
+            .field("ignored_watches", &self.ignored_watches)
+            .field("max_fsevent_paths", &self.max_fsevent_paths)
+            .field("ignore_filter", &self.ignore_filter)
             .finish()
     }
 }
@@ -355,6 +362,7 @@ fn translate_flags_with(
 struct StreamContextInfo {
     event_handler: Arc<Mutex<dyn EventHandler>>,
     recursive_info: HashMap<PathBuf, bool, FxBuildHasher>,
+    ignore_filter: IgnoreFilter,
 }
 
 // Free the context when the stream created by `FSEventStreamCreate` is released.
@@ -398,6 +406,7 @@ impl FsEventWatcher {
     fn from_event_handler(
         event_handler: Arc<Mutex<dyn EventHandler>>,
         max_fsevent_paths: usize,
+        ignore_filter: IgnoreFilter,
     ) -> Self {
         FsEventWatcher {
             paths: cf::CFMutableArray::empty(),
@@ -409,7 +418,9 @@ impl FsEventWatcher {
             event_handler,
             runloop: None,
             watches: HashMap::default(),
+            ignored_watches: HashSet::default(),
             max_fsevent_paths,
+            ignore_filter,
         }
     }
 
@@ -455,6 +466,9 @@ impl FsEventWatcher {
         } else {
             path.to_owned()
         };
+        if self.ignored_watches.remove(&p) {
+            return Ok(());
+        }
         match self.watches.remove(&p) {
             Some(_) => Ok(()),
             None => Err(Error::watch_not_found()),
@@ -472,6 +486,11 @@ impl FsEventWatcher {
             .to_path_buf()
             .canonicalize()
             .unwrap_or(path.to_path_buf());
+
+        if self.ignore_filter.is_path_ignored(&canonical_path) {
+            self.ignored_watches.insert(canonical_path);
+            return Ok(());
+        }
 
         self.watches
             .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
@@ -552,6 +571,7 @@ impl FsEventWatcher {
         let context = Box::into_raw(Box::new(StreamContextInfo {
             event_handler: Arc::clone(&self.event_handler),
             recursive_info: self.watches.clone(),
+            ignore_filter: self.ignore_filter.clone(),
         }));
 
         let mut stream_context = fs::FSEventStreamContext {
@@ -723,22 +743,21 @@ unsafe fn callback_impl(
             "FSEvent raw event received"
         );
 
-        let mut handle_event = false;
-        for (watch_path, r) in unsafe { &(*info).recursive_info } {
-            if path.starts_with(watch_path) {
-                if *r || &path == watch_path {
-                    handle_event = true;
-                    break;
-                } else if let Some(parent_path) = path.parent()
-                    && parent_path == watch_path
-                {
-                    handle_event = true;
-                    break;
-                }
-            }
-        }
-
-        if !handle_event {
+        // FSEvents watches recursively inside the kernel, so the events of unwatched and ignored
+        // paths can only be dropped here.
+        let kind = if flag.contains(StreamFlags::IS_DIR) {
+            EntryKind::Dir
+        } else if flag.intersects(StreamFlags::IS_FILE | StreamFlags::IS_SYMLINK) {
+            EntryKind::File
+        } else {
+            EntryKind::Unknown
+        };
+        let StreamContextInfo {
+            recursive_info,
+            ignore_filter,
+            ..
+        } = unsafe { &*info };
+        if !ignore_filter.is_watched(path, kind, |path| recursive_info.get(path).copied()) {
             continue;
         }
 
@@ -777,6 +796,7 @@ impl Watcher for FsEventWatcher {
         Ok(Self::from_event_handler(
             Arc::new(Mutex::new(event_handler)),
             config.max_fsevent_paths(),
+            config.ignored().clone(),
         ))
     }
 
@@ -878,6 +898,7 @@ mod tests {
         let context = Box::new(StreamContextInfo {
             event_handler,
             recursive_info,
+            ignore_filter: IgnoreFilter::default(),
         });
         let context_ptr = Box::into_raw(context) as *mut libc::c_void;
 
@@ -935,6 +956,7 @@ mod tests {
         let context = Box::new(StreamContextInfo {
             event_handler,
             recursive_info,
+            ignore_filter: IgnoreFilter::default(),
         });
         let context_ptr = Box::into_raw(context) as *mut libc::c_void;
 

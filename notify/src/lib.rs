@@ -177,6 +177,7 @@
 
 pub use config::{Config, RecursiveMode, TargetMode, WatchMode};
 pub use error::{Error, ErrorKind, Result};
+pub use filter::{EntryKind, IgnoreFilter};
 pub use notify_types::event::{self, Event, EventKind};
 #[cfg(test)]
 use std::collections::HashSet;
@@ -249,6 +250,7 @@ mod bimap;
 mod config;
 mod consolidating_path_trie;
 mod error;
+mod filter;
 
 #[cfg(test)]
 pub(crate) mod test;

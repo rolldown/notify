@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use file_id::FileId;
-use notify::WatchMode;
+use notify::{IgnoreFilter, WatchMode};
 
 /// The interface of a file ID cache.
 ///
@@ -33,6 +33,15 @@ pub trait FileIdCache {
             self.add_path(path, *watch_mode);
         }
     }
+
+    /// Set the filter of the watcher, see [`notify::Config::with_ignored`].
+    ///
+    /// This will be called once by the debouncer, before any path is added. The watcher reports
+    /// nothing about ignored paths, so a cache that scans directories should neither cache
+    /// ignored entries nor descend into ignored directories.
+    ///
+    /// The default implementation does nothing.
+    fn set_ignore_filter(&mut self, _ignore_filter: IgnoreFilter) {}
 }
 
 /// An implementation of the `FileIdCache` trait that doesn't hold any data.

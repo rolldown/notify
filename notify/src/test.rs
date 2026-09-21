@@ -277,6 +277,13 @@ pub struct ChannelConfig {
     watcher_config: Config,
 }
 
+impl ChannelConfig {
+    pub fn with_watcher_config(mut self, config: Config) -> Self {
+        self.watcher_config = config;
+        self
+    }
+}
+
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
@@ -343,7 +350,7 @@ pub fn sleep_until<F: FnMut() -> bool>(mut check: F, timeout: Duration) -> bool 
 /// Creates a [`TestWatcher`] and connected [`Receiver`]
 pub fn channel_with_config<W: Watcher>(config: &ChannelConfig) -> (TestWatcher<W>, Receiver) {
     let (tx, rx) = mpsc::channel();
-    let watcher = W::new(tx, config.watcher_config).expect("Unable to create a watcher");
+    let watcher = W::new(tx, config.watcher_config.clone()).expect("Unable to create a watcher");
     (
         TestWatcher {
             watcher,
@@ -372,14 +379,17 @@ pub fn recommended_channel() -> (TestWatcher<RecommendedWatcher>, Receiver) {
 ///
 /// Returned [`Receiver`] will send a message to poll changes before wait-methods
 pub fn poll_watcher_channel() -> (TestWatcher<PollWatcher>, Receiver) {
-    let (tx, rx) = mpsc::channel();
-    let watcher = PollWatcher::new(
-        tx,
+    poll_watcher_channel_with_config(
         Config::default()
             .with_compare_contents(true)
             .with_manual_polling(),
     )
-    .expect("Unable to create PollWatcher");
+}
+
+/// Like [`poll_watcher_channel`], with a caller-provided watcher config.
+pub fn poll_watcher_channel_with_config(config: Config) -> (TestWatcher<PollWatcher>, Receiver) {
+    let (tx, rx) = mpsc::channel();
+    let watcher = PollWatcher::new(tx, config).expect("Unable to create PollWatcher");
     let sender = watcher.poll_sender();
     let watcher = TestWatcher {
         watcher,

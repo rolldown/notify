@@ -6,6 +6,7 @@
 //! [ref]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363950(v=vs.85).aspx
 
 use crate::consolidating_path_trie::ConsolidatingPathTrie;
+use crate::filter::{EntryKind, IgnoreFilter};
 use crate::{
     BoundSender, Config, ErrorKind, PathsMut, Receiver, Sender, TargetMode, WatchMode, bounded,
     unbounded,
@@ -95,6 +96,7 @@ struct ReadData {
     watches: Rc<RefCell<HashMap<PathBuf, WatchMode, FxBuildHasher>>>,
     complete_sem: HANDLE,
     is_recursive: bool,
+    ignore_filter: IgnoreFilter,
 }
 
 struct ReadDirectoryRequest {
@@ -150,6 +152,7 @@ struct ReadDirectoryChangesServer {
     resolved_watches: HashMap<PathBuf, ResolvedWatch, FxBuildHasher>,
     watch_handles: HashMap<PathBuf, (WatchState, /* is_recursive */ bool), FxBuildHasher>,
     wakeup_sem: HANDLE,
+    ignore_filter: IgnoreFilter,
 }
 
 impl ReadDirectoryChangesServer {
@@ -157,6 +160,7 @@ impl ReadDirectoryChangesServer {
         event_handler: Arc<Mutex<dyn EventHandler>>,
         cmd_tx: Sender<Result<PathBuf>>,
         wakeup_sem: HANDLE,
+        ignore_filter: IgnoreFilter,
     ) -> Sender<Action> {
         let (action_tx, action_rx) = unbounded();
         // it is, in fact, ok to send the semaphore across threads
@@ -176,6 +180,7 @@ impl ReadDirectoryChangesServer {
                         resolved_watches: HashMap::default(),
                         watch_handles: HashMap::default(),
                         wakeup_sem,
+                        ignore_filter,
                     };
                     server.run();
                 }
@@ -256,6 +261,11 @@ impl ReadDirectoryChangesServer {
     ///
     /// Watch handles are left untouched; the caller drives `rebuild_watch_handles`.
     fn add_watch_internal(&mut self, path: PathBuf, mode: WatchMode) -> Result<()> {
+        // an ignored path is not watched
+        if self.ignore_filter.is_path_ignored(&path) {
+            return Ok(());
+        }
+
         let merged = match self.watches.borrow().get(&path) {
             Some(existing) => {
                 let mut merged = *existing;
@@ -432,6 +442,7 @@ impl ReadDirectoryChangesServer {
             watches: Rc::clone(&self.watches),
             complete_sem: semaphore,
             is_recursive,
+            ignore_filter: self.ignore_filter.clone(),
         };
         let ws = WatchState {
             dir_handle: handle,
@@ -542,12 +553,15 @@ fn compute_recursive_flag(
 /// watch.
 fn is_event_covered(
     watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    ignore_filter: &IgnoreFilter,
     event_path: &Path,
 ) -> bool {
-    event_path.ancestors().enumerate().any(|(depth, ancestor)| {
+    // ReadDirectoryChangesW watches recursively inside the kernel, so the events of ignored paths
+    // can only be dropped here. It doesn't tell us if the path is a file or a dir.
+    ignore_filter.is_watched(event_path, EntryKind::Unknown, |path| {
         watches
-            .get(ancestor)
-            .is_some_and(|mode| depth <= 1 || mode.recursive_mode.is_recursive())
+            .get(path)
+            .map(|mode| mode.recursive_mode.is_recursive())
     })
 }
 
@@ -740,7 +754,11 @@ unsafe extern "system" fn handle_event(
                 .join(PathBuf::from(OsString::from_wide(encoded_path))),
         );
 
-        let skip = !is_event_covered(&request.data.watches.borrow(), &path);
+        let skip = !is_event_covered(
+            &request.data.watches.borrow(),
+            &request.data.ignore_filter,
+            &path,
+        );
 
         tracing::trace!(
             handle_path = ?request.data.dir,
@@ -825,6 +843,13 @@ impl ReadDirectoryChangesWatcher {
     pub fn create(
         event_handler: Arc<Mutex<dyn EventHandler>>,
     ) -> Result<ReadDirectoryChangesWatcher> {
+        Self::create_with_filter(event_handler, IgnoreFilter::default())
+    }
+
+    fn create_with_filter(
+        event_handler: Arc<Mutex<dyn EventHandler>>,
+        ignore_filter: IgnoreFilter,
+    ) -> Result<ReadDirectoryChangesWatcher> {
         let (cmd_tx, cmd_rx) = unbounded();
 
         let wakeup_sem = unsafe { CreateSemaphoreW(ptr::null_mut(), 0, 1, ptr::null_mut()) };
@@ -832,7 +857,8 @@ impl ReadDirectoryChangesWatcher {
             return Err(Error::generic("Failed to create wakeup semaphore."));
         }
 
-        let action_tx = ReadDirectoryChangesServer::start(event_handler, cmd_tx, wakeup_sem);
+        let action_tx =
+            ReadDirectoryChangesServer::start(event_handler, cmd_tx, wakeup_sem, ignore_filter);
 
         Ok(ReadDirectoryChangesWatcher {
             tx: action_tx,
@@ -959,10 +985,9 @@ impl PathsMut for WindowsPathsMut<'_> {
 
 impl Watcher for ReadDirectoryChangesWatcher {
     #[tracing::instrument(level = "debug", skip(event_handler))]
-    #[expect(clippy::used_underscore_binding)]
-    fn new<F: EventHandler>(event_handler: F, _config: Config) -> Result<Self> {
+    fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
         let event_handler = Arc::new(Mutex::new(event_handler));
-        Self::create(event_handler)
+        Self::create_with_filter(event_handler, config.ignored().clone())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]

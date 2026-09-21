@@ -350,7 +350,6 @@ impl<T: Watcher> Drop for Debouncer<T> {
 }
 
 /// Creates a new debounced watcher with custom configuration.
-#[expect(clippy::needless_pass_by_value)]
 #[tracing::instrument(level = "debug", skip(event_handler))]
 pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher>(
     config: Config,

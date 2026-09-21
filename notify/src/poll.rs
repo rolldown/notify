@@ -4,8 +4,8 @@
 //! Rust stdlib APIs and should work on all of the platforms it supports.
 
 use crate::{
-    Config, Error, EventHandler, PathsMut, Receiver, Result, Sender, WatchMode, Watcher,
-    poll::data::WatchData, unbounded,
+    Config, Error, EventHandler, IgnoreFilter, PathsMut, Receiver, Result, Sender, WatchMode,
+    Watcher, poll::data::WatchData, unbounded,
 };
 use std::{
     path::{Path, PathBuf},
@@ -71,14 +71,14 @@ impl ScanEventHandler for () {
 use data::DataBuilder;
 mod data {
     use crate::{
-        Error, EventHandler, Result, WatchMode,
+        Error, EventHandler, IgnoreFilter, Result, WatchMode,
         consolidating_path_trie::ConsolidatingPathTrie,
         event::{CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind},
     };
     use rustc_hash::FxBuildHasher;
     use std::{
         cell::RefCell,
-        collections::{HashMap, hash_map::RandomState},
+        collections::{HashMap, HashSet, hash_map::RandomState},
         fmt::{self, Debug},
         fs::{File, FileType, Metadata},
         hash::{BuildHasher, Hasher},
@@ -206,25 +206,33 @@ mod data {
     pub(super) struct WatchData {
         // config part, won't change.
         follow_symlinks: bool,
+        ignore_filter: IgnoreFilter,
 
         // current status part.
         watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+        ignored_watches: HashSet<PathBuf, FxBuildHasher>,
         watch_handlers: WatchHandlers,
         all_path_data: HashMap<PathBuf, PathData, FxBuildHasher>,
     }
 
     impl WatchData {
         /// Create a new `WatchData`.
-        pub fn new(follow_symlinks: bool) -> Self {
+        pub fn new(follow_symlinks: bool, ignore_filter: IgnoreFilter) -> Self {
             Self {
                 follow_symlinks,
+                ignore_filter,
                 watches: HashMap::default(),
+                ignored_watches: HashSet::default(),
                 watch_handlers: WatchHandlers::new(),
                 all_path_data: HashMap::default(),
             }
         }
 
         pub fn add_watch(&mut self, path: PathBuf, mode: WatchMode) -> Result<()> {
+            if self.ignore_filter.is_path_ignored(&path) {
+                self.ignored_watches.insert(path);
+                return Ok(());
+            }
             if mode.target_mode == crate::TargetMode::NoTrack && !path.exists() {
                 return Err(crate::Error::path_not_found().add_path(path));
             }
@@ -236,6 +244,10 @@ mod data {
 
         pub fn add_watch_multiple(&mut self, paths: Vec<(PathBuf, WatchMode)>) -> Result<()> {
             for (path, mode) in paths {
+                if self.ignore_filter.is_path_ignored(&path) {
+                    self.ignored_watches.insert(path);
+                    continue;
+                }
                 if mode.target_mode == crate::TargetMode::NoTrack && !path.exists() {
                     return Err(crate::Error::path_not_found().add_path(path));
                 }
@@ -247,6 +259,9 @@ mod data {
         }
 
         pub fn remove_watch(&mut self, path: &Path) -> Result<()> {
+            if self.ignored_watches.remove(path) {
+                return Ok(());
+            }
             self.watches.remove(path).ok_or(Error::watch_not_found())?;
             self.watch_handlers.recalculate(&self.watches);
             Ok(())
@@ -261,9 +276,12 @@ mod data {
             let (watch_handlers, old_watch_handlers) = self.watch_handlers.use_handlers();
 
             // scan current filesystem.
-            for (path, new_path_data) in
-                Self::scan_all_path_data(data_builder, watch_handlers, self.follow_symlinks)
-            {
+            for (path, new_path_data) in Self::scan_all_path_data(
+                data_builder,
+                watch_handlers,
+                self.follow_symlinks,
+                &self.ignore_filter,
+            ) {
                 let event_kind = if let Some(old_path_data) = self.all_path_data.get_mut(&path) {
                     let event_kind =
                         PathData::compare_to_kind(Some(&*old_path_data), Some(&new_path_data));
@@ -324,6 +342,7 @@ mod data {
             data_builder: &DataBuilder,
             watch_handlers: &HashMap<PathBuf, /* recursive */ bool, FxBuildHasher>,
             follow_symlinks: bool,
+            ignore_filter: &IgnoreFilter,
         ) -> impl Iterator<Item = (PathBuf, PathData)> {
             tracing::trace!("rescanning");
 
@@ -334,10 +353,12 @@ mod data {
                 // so we can use single logic to do the both file & dir's jobs.
                 //
                 // See: https://docs.rs/walkdir/2.0.1/walkdir/struct.WalkDir.html#method.new
-                WalkDir::new(path)
-                    .follow_links(follow_symlinks)
-                    .max_depth(if *is_recursive { usize::MAX } else { 1 })
-                    .into_iter()
+                ignore_filter
+                    .walk(
+                        WalkDir::new(path)
+                            .follow_links(follow_symlinks)
+                            .max_depth(if *is_recursive { usize::MAX } else { 1 }),
+                    )
                     .filter_map(|entry_res| match entry_res {
                         Ok(entry) => Some(entry),
                         Err(err) => {
@@ -611,14 +632,16 @@ impl PathsMut for PollPathsMut<'_> {
 pub struct PollWatcher {
     delay: Option<Duration>,
     follow_symlinks: bool,
+    ignore_filter: IgnoreFilter,
 
     event_loop_tx: Sender<EventLoopMsg>,
 }
 
 impl PollWatcher {
     /// Create a new [`PollWatcher`], configured as needed.
+    #[expect(clippy::needless_pass_by_value, reason = "public API")]
     pub fn new<F: EventHandler>(event_handler: F, config: Config) -> crate::Result<PollWatcher> {
-        Ok(Self::with_opt::<_, ()>(event_handler, config, None))
+        Ok(Self::with_opt::<_, ()>(event_handler, &config, None))
     }
 
     /// Actively poll for changes. Can be combined with a timeout of 0 to perform only manual polling.
@@ -659,18 +682,19 @@ impl PollWatcher {
     /// Create a new [`PollWatcher`] with an scan event handler.
     ///
     /// `scan_fallback` is called on the initial scan with all files seen by the pollwatcher.
+    #[expect(clippy::needless_pass_by_value, reason = "public API")]
     pub fn with_initial_scan<F: EventHandler, G: ScanEventHandler>(
         event_handler: F,
         config: Config,
         scan_callback: G,
     ) -> crate::Result<PollWatcher> {
-        Ok(Self::with_opt(event_handler, config, Some(scan_callback)))
+        Ok(Self::with_opt(event_handler, &config, Some(scan_callback)))
     }
 
     /// create a new [`PollWatcher`] with all options.
     fn with_opt<F: EventHandler, G: ScanEventHandler>(
         event_handler: F,
-        config: Config,
+        config: &Config,
         scan_callback: Option<G>,
     ) -> PollWatcher {
         let (tx, rx) = unbounded();
@@ -678,6 +702,7 @@ impl PollWatcher {
         let poll_watcher = PollWatcher {
             delay: config.poll_interval(),
             follow_symlinks: config.follow_symlinks(),
+            ignore_filter: config.ignored().clone(),
 
             event_loop_tx: tx,
         };
@@ -692,11 +717,12 @@ impl PollWatcher {
     fn run(&self, rx: Receiver<EventLoopMsg>, mut data_builder: DataBuilder) {
         let delay = self.delay;
         let follow_symlinks = self.follow_symlinks;
+        let ignore_filter = self.ignore_filter.clone();
 
         let result = thread::Builder::new()
             .name("notify-rs poll loop".to_string())
             .spawn(move || {
-                let mut watch_data = WatchData::new(follow_symlinks);
+                let mut watch_data = WatchData::new(follow_symlinks, ignore_filter);
 
                 loop {
                     data_builder.update_timestamp();
@@ -830,6 +856,49 @@ mod tests {
 
     fn watcher() -> (TestWatcher<PollWatcher>, Receiver) {
         poll_watcher_channel()
+    }
+
+    fn ignoring_watcher() -> (TestWatcher<PollWatcher>, Receiver) {
+        poll_watcher_channel_with_config(
+            crate::Config::default()
+                .with_compare_contents(true)
+                .with_manual_polling()
+                .with_ignored(|path, _| {
+                    path.file_name().is_some_and(|name| name == "node_modules")
+                }),
+        )
+    }
+
+    #[test]
+    fn ignored_directory_is_not_scanned() {
+        let tmpdir = testdir();
+        let ignored = tmpdir.path().join("node_modules/pkg/index.js");
+        std::fs::create_dir_all(ignored.parent().unwrap()).expect("create dir");
+        std::fs::write(&ignored, "").expect("write");
+
+        let (mut watcher, rx) = ignoring_watcher();
+        watcher.watch_recursively(&tmpdir);
+        // watching an ignored path does nothing
+        watcher.watch_recursively(ignored.parent().unwrap());
+        watcher.watcher.wait_next_scan().expect("wait next scan");
+
+        std::fs::write(&ignored, "123").expect("write");
+        let path = tmpdir.path().join("index.js");
+        std::fs::File::create_new(&path).expect("Unable to create");
+
+        rx.sleep_until_parent_contains(&path);
+        rx.sleep_until_exists(&path);
+
+        rx.wait_unordered_exact([
+            expected(&path).create_file(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
+        ])
+        .ensure_no_tail();
+
+        watcher
+            .watcher
+            .unwatch(ignored.parent().unwrap())
+            .expect("unwatch");
     }
 
     #[test]
