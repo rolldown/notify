@@ -14,9 +14,8 @@
 
 #![allow(non_upper_case_globals, dead_code)]
 
-use crate::config::EntryKind;
 use crate::consolidating_path_trie::ConsolidatingPathTrie;
-use crate::filter::{AncestorMemo, IgnoreFilter};
+use crate::filter::{EntryKind, IgnoreFilter};
 use crate::{
     Config, Error, ErrorKind, EventHandler, PathsMut, Result, Sender, WatchMode, Watcher, unbounded,
 };
@@ -75,6 +74,7 @@ pub struct FsEventWatcher {
     event_handler: Arc<Mutex<dyn EventHandler>>,
     runloop: Option<(cf::CFRetained<cf::CFRunLoop>, thread::JoinHandle<()>)>,
     watches: HashMap<PathBuf, bool, FxBuildHasher>,
+    /// Ignored paths that have been passed to `watch()`. They are not watched.
     ignored_watches: HashSet<PathBuf, FxBuildHasher>,
     max_fsevent_paths: usize,
     ignore_filter: IgnoreFilter,
@@ -142,6 +142,7 @@ unsafe impl Send for FsEventWatcher {}
 // It's Sync because all methods that change the mutable state use `&mut self`.
 unsafe impl Sync for FsEventWatcher {}
 
+#[expect(clippy::too_many_lines)]
 fn translate_flags(flags: &StreamFlags, precise: bool, root_path_exists: bool) -> Vec<Event> {
     let mut evs = Vec::new();
     translate_flags_with(flags, precise, root_path_exists, |ev| evs.push(ev));
@@ -174,7 +175,6 @@ fn translated_event_count(flags: &StreamFlags, precise: bool) -> usize {
     count
 }
 
-#[expect(clippy::too_many_lines)]
 fn translate_flags_with(
     flags: &StreamFlags,
     precise: bool,
@@ -466,16 +466,20 @@ impl FsEventWatcher {
         } else {
             path.to_owned()
         };
-        if self.watches.remove(&p).is_some() || self.ignored_watches.remove(&p) {
-            Ok(())
-        } else {
-            Err(Error::watch_not_found())
+        if self.ignored_watches.remove(&p) {
+            return Ok(());
+        }
+        match self.watches.remove(&p) {
+            Some(_) => Ok(()),
+            None => Err(Error::watch_not_found()),
         }
     }
 
     // https://github.com/thibaudgg/rb-fsevent/blob/master/ext/fsevent_watch/main.c
     fn append_path(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
-        if path.as_os_str().is_empty() {
+        if (!path.exists() && watch_mode.target_mode != TargetMode::TrackPath)
+            || path == Path::new("")
+        {
             return Err(Error::path_not_found().add_path(path.into()));
         }
         let canonical_path = path
@@ -483,23 +487,11 @@ impl FsEventWatcher {
             .canonicalize()
             .unwrap_or(path.to_path_buf());
 
-        let metadata = canonical_path.metadata();
-        if metadata.is_err() && watch_mode.target_mode != TargetMode::TrackPath {
-            return Err(Error::path_not_found().add_path(path.into()));
-        }
-
-        let kind = match &metadata {
-            Ok(metadata) if metadata.is_dir() => EntryKind::Dir,
-            Ok(_) => EntryKind::File,
-            Err(_) => EntryKind::Unknown,
-        };
-        if self.ignore_filter.is_ignored_path(&canonical_path, kind) {
-            self.watches.remove(&canonical_path);
+        if self.ignore_filter.is_path_ignored(&canonical_path) {
             self.ignored_watches.insert(canonical_path);
             return Ok(());
         }
 
-        self.ignored_watches.remove(&canonical_path);
         self.watches
             .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
         Ok(())
@@ -730,7 +722,6 @@ unsafe fn callback_impl(
     let info = info as *const StreamContextInfo;
     let event_handler_mutex = unsafe { &(*info).event_handler };
     let mut event_handler_guard = None;
-    let mut ancestor_memo = AncestorMemo::default();
 
     for p in 0..num_events {
         // Paths are not guaranteed to be valid UTF-8 (e.g. NFS); keep them as raw bytes.
@@ -752,38 +743,22 @@ unsafe fn callback_impl(
             "FSEvent raw event received"
         );
 
-        let mut handle_event = false;
-        for (watch_path, r) in unsafe { &(*info).recursive_info } {
-            if path.starts_with(watch_path) {
-                if *r || path == watch_path {
-                    handle_event = true;
-                    break;
-                } else if let Some(parent_path) = path.parent()
-                    && parent_path == watch_path
-                {
-                    handle_event = true;
-                    break;
-                }
-            }
-        }
-
-        if !handle_event {
+        // FSEvents watches recursively inside the kernel, so the events of unwatched and ignored
+        // paths can only be dropped here.
+        let kind = if flag.contains(StreamFlags::IS_DIR) {
+            EntryKind::Dir
+        } else if flag.intersects(StreamFlags::IS_FILE | StreamFlags::IS_SYMLINK) {
+            EntryKind::File
+        } else {
+            EntryKind::Unknown
+        };
+        let StreamContextInfo {
+            recursive_info,
+            ignore_filter,
+            ..
+        } = unsafe { &*info };
+        if !ignore_filter.is_watched(path, kind, |path| recursive_info.get(path).copied()) {
             continue;
-        }
-
-        // FSEvents cannot prune its kernel-side recursion, so filter events.
-        let ignore_filter = unsafe { &(*info).ignore_filter };
-        if ignore_filter.is_active() {
-            let kind = if flag.contains(StreamFlags::IS_DIR) {
-                EntryKind::Dir
-            } else if flag.contains(StreamFlags::IS_FILE) {
-                EntryKind::File
-            } else {
-                EntryKind::Unknown
-            };
-            if ignore_filter.is_ignored_event_path(path, kind, &mut ancestor_memo) {
-                continue;
-            }
         }
 
         tracing::trace!(?path, ?flag, "FSEvent event received");
@@ -821,7 +796,7 @@ impl Watcher for FsEventWatcher {
         Ok(Self::from_event_handler(
             Arc::new(Mutex::new(event_handler)),
             config.max_fsevent_paths(),
-            IgnoreFilter::new(&config),
+            config.ignored().clone(),
         ))
     }
 
@@ -869,76 +844,6 @@ mod tests {
 
     fn watcher() -> (TestWatcher<FsEventWatcher>, Receiver) {
         channel()
-    }
-
-    #[test]
-    fn ignored_directory_events_are_filtered() {
-        let tmpdir = testdir();
-        let ignored_dir = tmpdir.path().join("node_modules");
-        let dep = ignored_dir.join("dep.js");
-        let src = tmpdir.path().join("src.js");
-        std::fs::create_dir(&ignored_dir).expect("create dir");
-        std::fs::write(&dep, "").expect("create dep");
-        std::fs::write(&src, "").expect("create src");
-
-        let (mut watcher, rx) = channel_with_config::<FsEventWatcher>(
-            &ChannelConfig::default().with_watcher_config(Config::default().with_ignored(
-                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
-            )),
-        );
-        watcher.watch_recursively(&tmpdir);
-
-        std::fs::write(&dep, b"123").expect("write dep");
-        std::fs::write(&src, b"123").expect("write src");
-
-        // FSEvents may coalesce flags, so assert only the filtering result.
-        thread::sleep(Duration::from_millis(1500));
-        let events: Vec<Event> = rx
-            .rx
-            .try_iter()
-            .map(|res| res.expect("watcher error"))
-            .collect();
-        assert!(
-            events
-                .iter()
-                .all(|e| e.paths.iter().all(|p| !p.starts_with(&ignored_dir))),
-            "events leaked from the ignored directory: {events:#?}"
-        );
-        assert!(
-            events.iter().any(|e| e.paths.contains(&src)),
-            "no events reported for the non-ignored file: {events:#?}"
-        );
-    }
-
-    #[test]
-    fn explicitly_watched_root_is_ignored() {
-        let tmpdir = testdir();
-        let ignored_dir = tmpdir.path().join("node_modules");
-        let watched_dir = ignored_dir.join("pkg");
-        let dep = watched_dir.join("dep.js");
-        std::fs::create_dir_all(&watched_dir).expect("create dir");
-        std::fs::write(&dep, "").expect("create dep");
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = FsEventWatcher::new(
-            tx,
-            Config::default().with_ignored(|path, _| {
-                path.file_name().is_some_and(|name| name == "node_modules")
-            }),
-        )
-        .expect("create watcher");
-        watcher
-            .watch(&watched_dir, WatchMode::recursive())
-            .expect("watch ignored root");
-
-        assert!(watcher.watches.is_empty());
-        assert!(watcher.ignored_watches.contains(&watched_dir));
-        std::fs::write(&dep, b"123").expect("write");
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_millis(200)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        ));
-        watcher.unwatch(&watched_dir).expect("unwatch ignored root");
     }
 
     #[expect(clippy::print_stdout)]

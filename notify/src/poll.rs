@@ -4,11 +4,10 @@
 //! Rust stdlib APIs and should work on all of the platforms it supports.
 
 use crate::{
-    Config, Error, EventHandler, PathsMut, Receiver, Result, Sender, WatchMode, Watcher,
-    filter::IgnoreFilter, poll::data::WatchData, unbounded,
+    Config, Error, EventHandler, IgnoreFilter, PathsMut, Receiver, Result, Sender, WatchMode,
+    Watcher, poll::data::WatchData, unbounded,
 };
 use std::{
-    env,
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
@@ -72,15 +71,14 @@ impl ScanEventHandler for () {
 use data::DataBuilder;
 mod data {
     use crate::{
-        Error, EventHandler, Result, WatchMode,
+        Error, EventHandler, IgnoreFilter, Result, WatchMode,
         consolidating_path_trie::ConsolidatingPathTrie,
         event::{CreateKind, DataChange, Event, EventKind, MetadataKind, ModifyKind, RemoveKind},
-        filter::IgnoreFilter,
     };
     use rustc_hash::FxBuildHasher;
     use std::{
         cell::RefCell,
-        collections::{HashMap, hash_map::RandomState},
+        collections::{HashMap, HashSet, hash_map::RandomState},
         fmt::{self, Debug},
         fs::{File, FileType, Metadata},
         hash::{BuildHasher, Hasher},
@@ -171,31 +169,19 @@ mod data {
         }
 
         /// Recalculate from `watches`.
-        fn recalculate(
-            &mut self,
-            watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>,
-            ignore_filter: &IgnoreFilter,
-        ) {
+        fn recalculate(&mut self, watches: &HashMap<PathBuf, WatchMode, FxBuildHasher>) {
             self.next.clear();
             self.is_stale = true;
 
             let mut trie = ConsolidatingPathTrie::new(false, 0);
             for (path, mode) in watches {
-                if mode.recursive_mode == crate::RecursiveMode::Recursive
-                    && (!ignore_filter.is_active()
-                        || !ignore_filter
-                            .is_ignored_path(path, crate::filter::entry_kind_of_path(path)))
-                {
+                if mode.recursive_mode == crate::RecursiveMode::Recursive {
                     trie.insert(path);
                 }
             }
             // insert non-recursive watches that are not covered by recursive watches
             for (path, mode) in watches {
-                if mode.recursive_mode != crate::RecursiveMode::Recursive
-                    && (!ignore_filter.is_active()
-                        || !ignore_filter
-                            .is_ignored_path(path, crate::filter::entry_kind_of_path(path)))
-                {
+                if mode.recursive_mode != crate::RecursiveMode::Recursive {
                     self.next.insert(path.clone(), false);
                 }
             }
@@ -224,6 +210,7 @@ mod data {
 
         // current status part.
         watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+        ignored_watches: HashSet<PathBuf, FxBuildHasher>,
         watch_handlers: WatchHandlers,
         all_path_data: HashMap<PathBuf, PathData, FxBuildHasher>,
     }
@@ -235,39 +222,48 @@ mod data {
                 follow_symlinks,
                 ignore_filter,
                 watches: HashMap::default(),
+                ignored_watches: HashSet::default(),
                 watch_handlers: WatchHandlers::new(),
                 all_path_data: HashMap::default(),
             }
         }
 
         pub fn add_watch(&mut self, path: PathBuf, mode: WatchMode) -> Result<()> {
+            if self.ignore_filter.is_path_ignored(&path) {
+                self.ignored_watches.insert(path);
+                return Ok(());
+            }
             if mode.target_mode == crate::TargetMode::NoTrack && !path.exists() {
                 return Err(crate::Error::path_not_found().add_path(path));
             }
 
             self.watches.insert(path, mode);
-            self.watch_handlers
-                .recalculate(&self.watches, &self.ignore_filter);
+            self.watch_handlers.recalculate(&self.watches);
             Ok(())
         }
 
         pub fn add_watch_multiple(&mut self, paths: Vec<(PathBuf, WatchMode)>) -> Result<()> {
             for (path, mode) in paths {
+                if self.ignore_filter.is_path_ignored(&path) {
+                    self.ignored_watches.insert(path);
+                    continue;
+                }
                 if mode.target_mode == crate::TargetMode::NoTrack && !path.exists() {
                     return Err(crate::Error::path_not_found().add_path(path));
                 }
 
                 self.watches.insert(path, mode);
             }
-            self.watch_handlers
-                .recalculate(&self.watches, &self.ignore_filter);
+            self.watch_handlers.recalculate(&self.watches);
             Ok(())
         }
 
         pub fn remove_watch(&mut self, path: &Path) -> Result<()> {
+            if self.ignored_watches.remove(path) {
+                return Ok(());
+            }
             self.watches.remove(path).ok_or(Error::watch_not_found())?;
-            self.watch_handlers
-                .recalculate(&self.watches, &self.ignore_filter);
+            self.watch_handlers.recalculate(&self.watches);
             Ok(())
         }
 
@@ -280,46 +276,43 @@ mod data {
             let (watch_handlers, old_watch_handlers) = self.watch_handlers.use_handlers();
 
             // scan current filesystem.
-            Self::scan_all_path_data(
+            for (path, new_path_data) in Self::scan_all_path_data(
                 data_builder,
                 watch_handlers,
                 self.follow_symlinks,
                 &self.ignore_filter,
-                |path, new_path_data| {
-                    let event_kind = if let Some(old_path_data) = self.all_path_data.get_mut(&path)
-                    {
-                        let event_kind =
-                            PathData::compare_to_kind(Some(&*old_path_data), Some(&new_path_data));
-                        *old_path_data = new_path_data;
-                        event_kind
-                    } else {
-                        let event_kind = PathData::compare_to_kind(None, Some(&new_path_data));
-                        self.all_path_data.insert(path.clone(), new_path_data);
-                        event_kind
-                    };
+            ) {
+                let event_kind = if let Some(old_path_data) = self.all_path_data.get_mut(&path) {
+                    let event_kind =
+                        PathData::compare_to_kind(Some(&*old_path_data), Some(&new_path_data));
+                    *old_path_data = new_path_data;
+                    event_kind
+                } else {
+                    let event_kind = PathData::compare_to_kind(None, Some(&new_path_data));
+                    self.all_path_data.insert(path.clone(), new_path_data);
+                    event_kind
+                };
 
-                    let is_initial =
-                        old_watch_handlers
-                            .as_ref()
-                            .is_some_and(|old_watch_handlers| {
-                                !old_watch_handlers.contains_key(&path)
-                                    && !path.ancestors().skip(1).any(|ancestor| {
-                                        old_watch_handlers
-                                            .get(ancestor)
-                                            .is_some_and(|is_recursive| *is_recursive)
-                                    })
-                            });
-                    if is_initial {
-                        // emit initial scans
-                        if let Some(ref emitter) = data_builder.scan_emitter {
-                            emitter.borrow_mut().handle_event(Ok(path));
-                        }
-                    } else if let Some(event_kind) = event_kind {
-                        let event = Event::new(event_kind).add_path(path);
-                        data_builder.emitter.emit_ok(event);
+                let is_initial = old_watch_handlers
+                    .as_ref()
+                    .is_some_and(|old_watch_handlers| {
+                        !old_watch_handlers.contains_key(&path)
+                            && !path.ancestors().skip(1).any(|ancestor| {
+                                old_watch_handlers
+                                    .get(ancestor)
+                                    .is_some_and(|is_recursive| *is_recursive)
+                            })
+                    });
+                if is_initial {
+                    // emit initial scans
+                    if let Some(ref emitter) = data_builder.scan_emitter {
+                        emitter.borrow_mut().handle_event(Ok(path.clone()));
                     }
-                },
-            );
+                } else if let Some(event_kind) = event_kind {
+                    let event = Event::new(event_kind).add_path(path);
+                    data_builder.emitter.emit_ok(event);
+                }
+            }
 
             // scan for disappeared paths.
             let mut disappeared_paths = Vec::new();
@@ -332,19 +325,6 @@ mod data {
             // remove disappeared paths
             for path in disappeared_paths {
                 let old_path_data = self.all_path_data.remove(&path);
-
-                if self.ignore_filter.is_active()
-                    && old_path_data.as_ref().is_some_and(|path_data| {
-                        let kind = if path_data.file_type.is_dir() {
-                            crate::EntryKind::Dir
-                        } else {
-                            crate::EntryKind::File
-                        };
-                        self.ignore_filter.is_ignored_path(&path, kind)
-                    })
-                {
-                    continue;
-                }
 
                 if let Some(event_kind) = PathData::compare_to_kind(old_path_data.as_ref(), None) {
                     let event = Event::new(event_kind).add_path(path);
@@ -363,88 +343,65 @@ mod data {
             watch_handlers: &HashMap<PathBuf, /* recursive */ bool, FxBuildHasher>,
             follow_symlinks: bool,
             ignore_filter: &IgnoreFilter,
-            mut handle: impl FnMut(PathBuf, PathData),
-        ) {
+        ) -> impl Iterator<Item = (PathBuf, PathData)> {
             tracing::trace!("rescanning");
 
-            for (path, is_recursive) in watch_handlers {
+            watch_handlers.iter().flat_map(move |(path, is_recursive)| {
                 tracing::trace!(?path, is_recursive, "scanning watch handler");
 
                 // WalkDir return only one entry if root is a file (not a folder),
                 // so we can use single logic to do the both file & dir's jobs.
                 //
                 // See: https://docs.rs/walkdir/2.0.1/walkdir/struct.WalkDir.html#method.new
-                let walk = WalkDir::new(path)
-                    .follow_links(follow_symlinks)
-                    .max_depth(if *is_recursive { usize::MAX } else { 1 })
-                    .into_iter();
+                ignore_filter
+                    .walk(
+                        WalkDir::new(path)
+                            .follow_links(follow_symlinks)
+                            .max_depth(if *is_recursive { usize::MAX } else { 1 }),
+                    )
+                    .filter_map(|entry_res| match entry_res {
+                        Ok(entry) => Some(entry),
+                        Err(err) => {
+                            tracing::warn!("walkdir error scanning {err:?}");
 
-                if ignore_filter.is_active() {
-                    let filter = ignore_filter.clone();
-                    Self::scan_entries(
-                        data_builder,
-                        walk.filter_entry(move |entry| {
-                            entry.depth() == 0
-                                || !filter.is_ignored(
-                                    entry.path(),
-                                    crate::filter::entry_kind_of_walkdir(entry),
-                                )
-                        }),
-                        &mut handle,
-                    );
-                } else {
-                    Self::scan_entries(data_builder, walk, &mut handle);
-                }
-            }
-        }
-
-        fn scan_entries(
-            data_builder: &DataBuilder,
-            entries: impl Iterator<Item = walkdir::Result<walkdir::DirEntry>>,
-            handle: &mut impl FnMut(PathBuf, PathData),
-        ) {
-            for entry_res in entries {
-                let entry = match entry_res {
-                    Ok(entry) => entry,
-                    Err(err) => {
-                        tracing::warn!("walkdir error scanning {err:?}");
-
-                        if let Some(io_error) = err.io_error() {
-                            if io_error.kind() == io::ErrorKind::NotFound {
-                                continue;
+                            if let Some(io_error) = err.io_error() {
+                                if io_error.kind() == io::ErrorKind::NotFound {
+                                    return None;
+                                }
+                                // clone an io::Error, so we have to create a new one.
+                                let new_io_error = io::Error::new(io_error.kind(), err.to_string());
+                                data_builder.emitter.emit_io_err(new_io_error, err.path());
+                            } else {
+                                let crate_err =
+                                    Error::new(crate::ErrorKind::Generic(err.to_string()));
+                                data_builder.emitter.emit(Err(crate_err));
                             }
-                            // clone an io::Error, so we have to create a new one.
-                            let new_io_error = io::Error::new(io_error.kind(), err.to_string());
-                            data_builder.emitter.emit_io_err(new_io_error, err.path());
-                        } else {
-                            let crate_err = Error::new(crate::ErrorKind::Generic(err.to_string()));
-                            data_builder.emitter.emit(Err(crate_err));
+                            None
                         }
-                        continue;
-                    }
-                };
+                    })
+                    .filter_map(move |entry| match entry.metadata() {
+                        Ok(metadata) => {
+                            let path = entry.into_path();
+                            let meta_path = MetaPath::from_parts_unchecked(path, metadata);
+                            let data_path = data_builder.build_path_data(&meta_path);
 
-                match entry.metadata() {
-                    Ok(metadata) => {
-                        let path = entry.into_path();
-                        let meta_path = MetaPath::from_parts_unchecked(path, metadata);
-                        let path_data = data_builder.build_path_data(&meta_path);
-                        handle(meta_path.into_path(), path_data);
-                    }
-                    Err(err) => {
-                        if err
-                            .io_error()
-                            .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
-                        {
-                            continue;
+                            Some((meta_path.into_path(), data_path))
                         }
+                        Err(err) => {
+                            if let Some(io_error) = err.io_error()
+                                && io_error.kind() == io::ErrorKind::NotFound
+                            {
+                                return None;
+                            }
 
-                        data_builder
-                            .emitter
-                            .emit_io_err(err, Some(entry.into_path()));
-                    }
-                }
-            }
+                            // emit event.
+                            let path = entry.into_path();
+                            data_builder.emitter.emit_io_err(err, Some(path));
+
+                            None
+                        }
+                    })
+            })
         }
     }
 
@@ -634,14 +591,6 @@ enum EventLoopMsg {
     Shutdown,
 }
 
-fn absolute_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(env::current_dir().map_err(Error::io)?.join(path))
-    }
-}
-
 struct PollPathsMut<'a> {
     inner: &'a mut PollWatcher,
     add_paths: Vec<(PathBuf, WatchMode)>,
@@ -690,7 +639,7 @@ pub struct PollWatcher {
 
 impl PollWatcher {
     /// Create a new [`PollWatcher`], configured as needed.
-    #[expect(clippy::needless_pass_by_value, reason = "public API compatibility")]
+    #[expect(clippy::needless_pass_by_value, reason = "public API")]
     pub fn new<F: EventHandler>(event_handler: F, config: Config) -> crate::Result<PollWatcher> {
         Ok(Self::with_opt::<_, ()>(event_handler, &config, None))
     }
@@ -733,7 +682,7 @@ impl PollWatcher {
     /// Create a new [`PollWatcher`] with an scan event handler.
     ///
     /// `scan_fallback` is called on the initial scan with all files seen by the pollwatcher.
-    #[expect(clippy::needless_pass_by_value, reason = "public API compatibility")]
+    #[expect(clippy::needless_pass_by_value, reason = "public API")]
     pub fn with_initial_scan<F: EventHandler, G: ScanEventHandler>(
         event_handler: F,
         config: Config,
@@ -753,7 +702,7 @@ impl PollWatcher {
         let poll_watcher = PollWatcher {
             delay: config.poll_interval(),
             follow_symlinks: config.follow_symlinks(),
-            ignore_filter: IgnoreFilter::new(config),
+            ignore_filter: config.ignored().clone(),
 
             event_loop_tx: tx,
         };
@@ -835,15 +784,11 @@ impl PollWatcher {
     fn watch_inner(&self, path: &Path, watch_mode: WatchMode) -> crate::Result<()> {
         let (tx, rx) = unbounded();
         self.event_loop_tx
-            .send(EventLoopMsg::AddWatch(absolute_path(path)?, watch_mode, tx))?;
+            .send(EventLoopMsg::AddWatch(path.to_path_buf(), watch_mode, tx))?;
         rx.recv().unwrap()
     }
 
     fn watch_multiple_inner(&self, paths: Vec<(PathBuf, WatchMode)>) -> crate::Result<()> {
-        let paths = paths
-            .into_iter()
-            .map(|(path, mode)| absolute_path(&path).map(|path| (path, mode)))
-            .collect::<Result<Vec<_>>>()?;
         let (tx, rx) = unbounded();
         self.event_loop_tx
             .send(EventLoopMsg::AddWatchMultiple(paths, tx))?;
@@ -856,7 +801,7 @@ impl PollWatcher {
     fn unwatch_inner(&self, path: &Path) -> crate::Result<()> {
         let (tx, rx) = unbounded();
         self.event_loop_tx
-            .send(EventLoopMsg::RemoveWatch(absolute_path(path)?, tx))?;
+            .send(EventLoopMsg::RemoveWatch(path.to_path_buf(), tx))?;
         rx.recv().unwrap()
     }
 }
@@ -913,106 +858,47 @@ mod tests {
         poll_watcher_channel()
     }
 
-    #[test]
-    fn ignored_missing_no_track_path_is_rejected() {
-        use crate::Config;
-
-        let tmpdir = testdir();
-        let path = tmpdir.path().join("node_modules");
-        let (mut watcher, _) =
-            poll_watcher_channel_with_config(Config::default().with_manual_polling().with_ignored(
-                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
-            ));
-
-        let watch_mode = WatchMode {
-            recursive_mode: RecursiveMode::NonRecursive,
-            target_mode: TargetMode::NoTrack,
-        };
-        let result = watcher.watcher.watch(&path, watch_mode);
-        assert!(matches!(
-            result,
-            Err(Error {
-                kind: ErrorKind::PathNotFound,
-                ..
-            })
-        ));
-
-        let mut paths = watcher.watcher.paths_mut();
-        paths.add(&path, watch_mode).expect("stage watch");
-        let result = paths.commit();
-        assert!(matches!(
-            result,
-            Err(Error {
-                kind: ErrorKind::PathNotFound,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn ignored_directory_is_not_scanned_and_produces_no_events() {
-        use crate::Config;
-
-        let tmpdir = testdir();
-        let ignored_dir = tmpdir.path().join("node_modules");
-        let watched_dir = ignored_dir.join("pkg");
-        let dep = watched_dir.join("dep.js");
-        std::fs::create_dir_all(&watched_dir).expect("create dir");
-        std::fs::write(&dep, "").expect("create dep");
-
-        let (mut watcher, rx) = poll_watcher_channel_with_config(
-            Config::default()
+    fn ignoring_watcher() -> (TestWatcher<PollWatcher>, Receiver) {
+        poll_watcher_channel_with_config(
+            crate::Config::default()
                 .with_compare_contents(true)
                 .with_manual_polling()
                 .with_ignored(|path, _| {
                     path.file_name().is_some_and(|name| name == "node_modules")
                 }),
-        );
-        watcher.watch_recursively(&tmpdir);
-        watcher.watcher.wait_next_scan().expect("wait next scan");
-
-        std::fs::write(&dep, b"123").expect("write dep");
-        let src = tmpdir.path().join("src.js");
-        std::fs::File::create_new(&src).expect("create src");
-
-        rx.sleep_until_parent_contains(&src);
-        rx.sleep_until_exists(&src);
-
-        rx.wait_unordered_exact([
-            expected(&src).create_file(),
-            expected(tmpdir.path()).modify_meta_mtime().optional(),
-        ])
-        .ensure_no_tail();
+        )
     }
 
     #[test]
-    fn explicitly_watched_root_is_ignored() {
-        use crate::Config;
-
+    fn ignored_directory_is_not_scanned() {
         let tmpdir = testdir();
-        let ignored_dir = tmpdir.path().join("node_modules");
-        let watched_dir = ignored_dir.join("pkg");
-        let dep = watched_dir.join("dep.js");
-        std::fs::create_dir_all(&watched_dir).expect("create dir");
-        std::fs::write(&dep, "").expect("create dep");
+        let ignored = tmpdir.path().join("node_modules/pkg/index.js");
+        std::fs::create_dir_all(ignored.parent().unwrap()).expect("create dir");
+        std::fs::write(&ignored, "").expect("write");
 
-        let (mut watcher, rx) =
-            poll_watcher_channel_with_config(Config::default().with_manual_polling().with_ignored(
-                |path, _| path.file_name().is_some_and(|name| name == "node_modules"),
-            ));
-        watcher.watch_recursively(&watched_dir);
+        let (mut watcher, rx) = ignoring_watcher();
+        watcher.watch_recursively(&tmpdir);
+        // watching an ignored path does nothing
+        watcher.watch_recursively(ignored.parent().unwrap());
         watcher.watcher.wait_next_scan().expect("wait next scan");
 
-        std::fs::write(&dep, b"123").expect("write");
-        watcher.watcher.wait_next_scan().expect("wait next scan");
-        assert!(matches!(
-            rx.try_recv(),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        ));
+        std::fs::write(&ignored, "123").expect("write");
+        let path = tmpdir.path().join("index.js");
+        std::fs::File::create_new(&path).expect("Unable to create");
+
+        rx.sleep_until_parent_contains(&path);
+        rx.sleep_until_exists(&path);
+
+        rx.wait_unordered_exact([
+            expected(&path).create_file(),
+            expected(tmpdir.path()).modify_meta_mtime().optional(),
+        ])
+        .ensure_no_tail();
+
         watcher
             .watcher
-            .unwatch(&watched_dir)
-            .expect("unwatch ignored root");
+            .unwatch(ignored.parent().unwrap())
+            .expect("unwatch");
     }
 
     #[test]

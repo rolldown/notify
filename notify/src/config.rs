@@ -1,9 +1,7 @@
 //! Configuration types
 
-use std::fmt;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::filter::{EntryKind, IgnoreFilter};
+use std::{path::Path, time::Duration};
 
 /// Default maximum number of paths to pass to FSEvents, chosen to stay
 /// well under the macOS default file descriptor soft limit (256).
@@ -37,17 +35,6 @@ impl WatchMode {
         }
     }
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "windows",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-        target_os = "ios",
-        all(target_os = "macos", feature = "macos_kqueue")
-    ))]
     pub(crate) fn upgrade_with(&mut self, other: WatchMode) {
         self.recursive_mode = self.recursive_mode.upgraded_with(other.recursive_mode);
         self.target_mode = self.target_mode.upgraded_with(other.target_mode);
@@ -73,17 +60,6 @@ impl RecursiveMode {
         }
     }
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "windows",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-        target_os = "ios",
-        all(target_os = "macos", feature = "macos_kqueue")
-    ))]
     pub(crate) fn upgraded_with(self, other: Self) -> Self {
         match self {
             RecursiveMode::Recursive => self,
@@ -120,17 +96,6 @@ pub enum TargetMode {
 }
 
 impl TargetMode {
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "windows",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-        target_os = "ios",
-        all(target_os = "macos", feature = "macos_kqueue")
-    ))]
     pub(crate) fn upgraded_with(self, other: Self) -> Self {
         match self {
             TargetMode::TrackPath => self,
@@ -144,22 +109,6 @@ impl TargetMode {
         }
     }
 }
-
-/// Best-effort path type passed to [`Config::with_ignored`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryKind {
-    /// The path is a directory.
-    Dir,
-    /// The path is not a directory.
-    File,
-    /// The path type is unavailable.
-    Unknown,
-}
-
-/// Predicate installed with [`Config::with_ignored`].
-///
-/// Returning `true` excludes the path from watching.
-pub(crate) type IgnoredFilter = Arc<dyn Fn(&Path, EntryKind) -> bool + Send + Sync>;
 
 /// Watcher Backend configuration
 ///
@@ -175,7 +124,7 @@ pub(crate) type IgnoredFilter = Arc<dyn Fn(&Path, EntryKind) -> bool + Send + Sy
 /// ```
 ///
 /// Some options can be changed during runtime, others have to be set when creating the watcher backend.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub struct Config {
     /// See [Config::with_poll_interval]
     poll_interval: Option<Duration>,
@@ -189,19 +138,7 @@ pub struct Config {
     max_fsevent_paths: usize,
 
     /// See [Config::with_ignored]
-    ignored: Option<IgnoredFilter>,
-}
-
-impl fmt::Debug for Config {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Config")
-            .field("poll_interval", &self.poll_interval)
-            .field("compare_contents", &self.compare_contents)
-            .field("follow_symlinks", &self.follow_symlinks)
-            .field("max_fsevent_paths", &self.max_fsevent_paths)
-            .field("ignored", &self.ignored.is_some())
-            .finish()
-    }
+    ignored: IgnoreFilter,
 }
 
 impl Config {
@@ -303,36 +240,50 @@ impl Config {
         self.max_fsevent_paths
     }
 
-    /// Ignore paths for which the filter returns `true`.
+    /// Ignore the paths for which `ignored` returns `true`.
     ///
-    /// - Ignored directories exclude their entire subtree. Backends prune the
-    ///   traversal where possible; other backends filter the resulting events.
-    /// - Paths passed directly to `watch()` are also filtered.
-    /// - Paths are absolute. [`EntryKind::Unknown`] is used when the type is
-    ///   unavailable, such as after deletion.
-    /// - The filter runs on the watcher thread and must not block.
-    /// - Multi-path events are dropped only when every path is ignored.
+    /// An ignored path is treated as if it did not exist: it is not watched, not scanned and
+    /// never reported in an event. Ignoring a directory ignores everything below it.
     ///
-    /// Recreate the watcher to change the filter.
+    /// ```
+    /// use notify::{Config, EntryKind};
+    ///
+    /// // ignore all `node_modules` directories
+    /// let config = Config::default().with_ignored(|path, kind| {
+    ///     // the kind is not always known, see below
+    ///     kind != EntryKind::File && path.file_name().is_some_and(|name| name == "node_modules")
+    /// });
+    /// ```
+    ///
+    /// - The filter applies to all paths, including the ones passed to
+    ///   [`Watcher::watch`](crate::Watcher::watch): watching a path that is ignored, or that lies
+    ///   below an ignored directory, succeeds but does nothing.
+    /// - The filter is asked about one path at a time, in the same form as the path is reported
+    ///   in events. It does not have to test the parent directories, the watcher does that.
+    /// - [`EntryKind::Unknown`] is passed if the watcher cannot tell whether the path is a
+    ///   directory: for a watched path that does not exist, and for all events on Windows.
+    /// - Backends that walk the file tree (inotify, kqueue and poll) do not descend into ignored
+    ///   directories, which saves their watch resources. FSEvents and Windows watch recursively
+    ///   inside the kernel, so they can only drop the events of ignored paths.
+    /// - A rename between an ignored and a non-ignored path is reported like a rename out of
+    ///   or into the watched directory.
+    /// - The filter runs on the watcher thread. It must be fast, must not block and must always
+    ///   return the same answer for the same arguments.
+    ///
+    /// The filter cannot be changed later, create a new watcher instead.
     #[must_use]
     pub fn with_ignored(
         mut self,
-        f: impl Fn(&Path, EntryKind) -> bool + Send + Sync + 'static,
+        ignored: impl Fn(&Path, EntryKind) -> bool + Send + Sync + 'static,
     ) -> Self {
-        self.ignored = Some(Arc::new(f));
+        self.ignored = IgnoreFilter::new(ignored);
         self
     }
 
-    /// Returns the installed ignore filter, if any.
+    /// Returns current setting.
     #[must_use]
-    pub(crate) fn ignored(&self) -> Option<&IgnoredFilter> {
-        self.ignored.as_ref()
-    }
-
-    pub(crate) fn clone_without_ignored(&self) -> Self {
-        let mut config = self.clone();
-        config.ignored = None;
-        config
+    pub fn ignored(&self) -> &IgnoreFilter {
+        &self.ignored
     }
 }
 
@@ -343,7 +294,7 @@ impl Default for Config {
             compare_contents: false,
             follow_symlinks: true,
             max_fsevent_paths: DEFAULT_MAX_FSEVENT_PATHS,
-            ignored: None,
+            ignored: IgnoreFilter::default(),
         }
     }
 }

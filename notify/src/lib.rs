@@ -175,8 +175,9 @@
 
 #![deny(missing_docs)]
 
-pub use config::{Config, EntryKind, RecursiveMode, TargetMode, WatchMode};
+pub use config::{Config, RecursiveMode, TargetMode, WatchMode};
 pub use error::{Error, ErrorKind, Result};
+pub use filter::{EntryKind, IgnoreFilter};
 pub use notify_types::event::{self, Event, EventKind};
 #[cfg(test)]
 use std::collections::HashSet;

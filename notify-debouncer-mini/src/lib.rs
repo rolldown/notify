@@ -107,7 +107,7 @@ pub trait DebounceEventHandler: Send + 'static {
 /// let config = Config::default().with_timeout(Duration::from_secs(1)).with_batch_mode(true)
 ///     .with_notify_config(backend_config);
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Config {
     timeout: Duration,
     batch_mode: bool,
