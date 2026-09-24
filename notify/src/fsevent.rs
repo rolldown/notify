@@ -30,8 +30,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 bitflags::bitflags! {
   #[repr(C)]
@@ -72,8 +73,107 @@ pub struct FsEventWatcher {
     flags: fs::FSEventStreamCreateFlags,
     event_handler: Arc<Mutex<dyn EventHandler>>,
     runloop: Option<(cf::CFRetained<cf::CFRunLoop>, thread::JoinHandle<()>)>,
-    watches: HashMap<PathBuf, bool, FxBuildHasher>,
+    watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    gone_roots: Arc<Mutex<GoneRoots>>,
     max_fsevent_paths: usize,
+}
+
+/// The `TrackPath` roots that are not there. FSEvents reports a root that comes back through
+/// `ROOT_CHANGED`, except when it comes back within a few milliseconds of going; a root that
+/// went is therefore looked at again shortly after, on a thread of its own.
+#[derive(Debug, Default)]
+struct GoneRoots {
+    roots: HashSet<PathBuf, FxBuildHasher>,
+    /// Bumped each time a root goes, so that the looking thread does not stop before it has
+    /// seen the latest one.
+    epoch: u64,
+    looking: bool,
+    stopped: bool,
+}
+
+impl GoneRoots {
+    const LOOK_AGAIN_AFTER: [Duration; 2] =
+        [Duration::from_millis(200), Duration::from_millis(1800)];
+
+    fn lock(this: &Mutex<Self>) -> std::sync::MutexGuard<'_, Self> {
+        this.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `root` went; look at it again in a moment unless FSEvents reports it back first.
+    fn went(this: &Arc<Mutex<Self>>, root: &Path, event_handler: &Arc<Mutex<dyn EventHandler>>) {
+        let mut gone = Self::lock(this);
+        gone.roots.insert(root.to_path_buf());
+        gone.epoch += 1;
+        if gone.looking || gone.stopped {
+            return;
+        }
+        gone.looking = true;
+        drop(gone);
+        let gone = Arc::clone(this);
+        let event_handler = Arc::clone(event_handler);
+        let spawned = thread::Builder::new()
+            .name("notify-rs fsevent roots".to_string())
+            .spawn(move || Self::look_again(&gone, &event_handler));
+        if let Err(e) = spawned {
+            tracing::error!(
+                ?e,
+                "failed to spawn the thread that looks at gone roots again"
+            );
+            Self::lock(this).looking = false;
+        }
+    }
+
+    fn look_again(this: &Arc<Mutex<Self>>, event_handler: &Arc<Mutex<dyn EventHandler>>) {
+        loop {
+            let epoch = Self::lock(this).epoch;
+            for delay in Self::LOOK_AGAIN_AFTER {
+                thread::sleep(delay);
+                let roots: Vec<PathBuf> = {
+                    let gone = Self::lock(this);
+                    if gone.stopped {
+                        return;
+                    }
+                    gone.roots.iter().cloned().collect()
+                };
+                for root in roots {
+                    let Ok(meta) = std::fs::metadata(&root) else {
+                        continue;
+                    };
+                    if !Self::lock(this).roots.remove(&root) {
+                        continue;
+                    }
+                    let kind = if meta.is_dir() {
+                        CreateKind::Folder
+                    } else {
+                        CreateKind::File
+                    };
+                    let event = Event::new(EventKind::Create(kind))
+                        .set_info("root changed")
+                        .add_path(root);
+                    event_handler
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .handle_event(Ok(event));
+                }
+            }
+            let mut gone = Self::lock(this);
+            if gone.epoch == epoch || gone.stopped {
+                gone.looking = false;
+                return;
+            }
+        }
+    }
+}
+
+/// What a `ROOT_CHANGED` event says about the root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootChange {
+    /// The root is not there.
+    Gone,
+    /// The root is there, a directory or a file.
+    Present { is_dir: bool },
+    /// The root is there, and that was reported already.
+    Reported,
 }
 
 // FSEvents applies the path limit across live streams, so all watcher instances
@@ -124,6 +224,8 @@ impl fmt::Debug for FsEventWatcher {
             .field("event_handler", &Arc::as_ptr(&self.event_handler))
             .field("runloop", &self.runloop)
             .field("watches", &self.watches)
+            .field("gone_roots", &self.gone_roots)
+            .field("max_fsevent_paths", &self.max_fsevent_paths)
             .finish()
     }
 }
@@ -135,10 +237,9 @@ unsafe impl Send for FsEventWatcher {}
 // It's Sync because all methods that change the mutable state use `&mut self`.
 unsafe impl Sync for FsEventWatcher {}
 
-#[expect(clippy::too_many_lines)]
-fn translate_flags(flags: &StreamFlags, precise: bool, root_path_exists: bool) -> Vec<Event> {
+fn translate_flags(flags: &StreamFlags, precise: bool, root: Option<RootChange>) -> Vec<Event> {
     let mut evs = Vec::new();
-    translate_flags_with(flags, precise, root_path_exists, |ev| evs.push(ev));
+    translate_flags_with(flags, precise, root, |ev| evs.push(ev));
     evs
 }
 
@@ -168,10 +269,12 @@ fn translated_event_count(flags: &StreamFlags, precise: bool) -> usize {
     count
 }
 
+/// `root` says, for a `ROOT_CHANGED` event, what became of the root; `None` counts as gone.
+#[expect(clippy::too_many_lines)]
 fn translate_flags_with(
     flags: &StreamFlags,
     precise: bool,
-    root_path_exists: bool,
+    root: Option<RootChange>,
     mut emit: impl FnMut(Event),
 ) {
     // «Denotes a sentinel event sent to mark the end of the "historical" events
@@ -230,30 +333,40 @@ fn translate_flags_with(
         return;
     }
 
-    // A watched root changed (renamed or removed). If the flags provide a hint,
-    // prefer that over guessing. Otherwise, treat it as a removal to avoid
-    // misclassifying a delete as a rename.
+    // A watched root changed: it, or a directory above it, was renamed, removed or brought back.
+    // The disk says which. A root that is there is reported as created, unless the flags carry
+    // its own creation, which is reported below. For a root that is gone, the flags say whether
+    // it was renamed; otherwise it is treated as removed rather than guessed to be renamed.
     let root_changed = flags.contains(StreamFlags::ROOT_CHANGED);
     if root_changed {
-        let kind = if flags.contains(StreamFlags::ITEM_REMOVED) {
-            if flags.contains(StreamFlags::IS_DIR) {
-                EventKind::Remove(RemoveKind::Folder)
-            } else if flags.contains(StreamFlags::IS_FILE) {
-                EventKind::Remove(RemoveKind::File)
-            } else {
-                EventKind::Remove(RemoveKind::Any)
+        match root {
+            Some(RootChange::Present { is_dir }) => {
+                if !flags.contains(StreamFlags::ITEM_CREATED) {
+                    let kind = if is_dir {
+                        CreateKind::Folder
+                    } else {
+                        CreateKind::File
+                    };
+                    emit_event(Event::new(EventKind::Create(kind)).set_info("root changed"));
+                }
             }
-        } else if flags.contains(StreamFlags::ITEM_RENAMED) {
-            EventKind::Modify(ModifyKind::Name(RenameMode::From))
-        } else {
-            EventKind::Remove(RemoveKind::Any)
-        };
-
-        // When ROOT_CHANGED fires but the path still exists on disk, the
-        // remove is spurious (e.g. creating a previously non-existent watched
-        // path, or recreating a deleted one).
-        if !kind.is_remove() || !root_path_exists {
-            emit_event(Event::new(kind).set_info("root changed"));
+            Some(RootChange::Reported) => {}
+            Some(RootChange::Gone) | None => {
+                let kind = if flags.contains(StreamFlags::ITEM_REMOVED) {
+                    if flags.contains(StreamFlags::IS_DIR) {
+                        EventKind::Remove(RemoveKind::Folder)
+                    } else if flags.contains(StreamFlags::IS_FILE) {
+                        EventKind::Remove(RemoveKind::File)
+                    } else {
+                        EventKind::Remove(RemoveKind::Any)
+                    }
+                } else if flags.contains(StreamFlags::ITEM_RENAMED) {
+                    EventKind::Modify(ModifyKind::Name(RenameMode::From))
+                } else {
+                    EventKind::Remove(RemoveKind::Any)
+                };
+                emit_event(Event::new(kind).set_info("root changed"));
+            }
         }
     }
 
@@ -354,7 +467,8 @@ fn translate_flags_with(
 
 struct StreamContextInfo {
     event_handler: Arc<Mutex<dyn EventHandler>>,
-    recursive_info: HashMap<PathBuf, bool, FxBuildHasher>,
+    watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
+    gone_roots: Arc<Mutex<GoneRoots>>,
 }
 
 // Free the context when the stream created by `FSEventStreamCreate` is released.
@@ -409,6 +523,7 @@ impl FsEventWatcher {
             event_handler,
             runloop: None,
             watches: HashMap::default(),
+            gone_roots: Arc::default(),
             max_fsevent_paths,
         }
     }
@@ -455,6 +570,7 @@ impl FsEventWatcher {
         } else {
             path.to_owned()
         };
+        GoneRoots::lock(&self.gone_roots).roots.remove(&p);
         match self.watches.remove(&p) {
             Some(_) => Ok(()),
             None => Err(Error::watch_not_found()),
@@ -473,8 +589,12 @@ impl FsEventWatcher {
             .canonicalize()
             .unwrap_or(path.to_path_buf());
 
-        self.watches
-            .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
+        if watch_mode.target_mode == TargetMode::TrackPath && !canonical_path.exists() {
+            GoneRoots::lock(&self.gone_roots)
+                .roots
+                .insert(canonical_path.clone());
+        }
+        self.watches.insert(canonical_path, watch_mode);
         Ok(())
     }
 
@@ -551,7 +671,8 @@ impl FsEventWatcher {
         // `FSEventStreamRelease`.
         let context = Box::into_raw(Box::new(StreamContextInfo {
             event_handler: Arc::clone(&self.event_handler),
-            recursive_info: self.watches.clone(),
+            watches: self.watches.clone(),
+            gone_roots: Arc::clone(&self.gone_roots),
         }));
 
         let mut stream_context = fs::FSEventStreamContext {
@@ -724,9 +845,9 @@ unsafe fn callback_impl(
         );
 
         let mut handle_event = false;
-        for (watch_path, r) in unsafe { &(*info).recursive_info } {
+        for (watch_path, mode) in unsafe { &(*info).watches } {
             if path.starts_with(watch_path) {
-                if *r || &path == watch_path {
+                if mode.recursive_mode.is_recursive() || path == watch_path {
                     handle_event = true;
                     break;
                 } else if let Some(parent_path) = path.parent()
@@ -749,8 +870,32 @@ unsafe fn callback_impl(
             continue;
         }
 
-        let root_path_exists = flag.contains(StreamFlags::ROOT_CHANGED) && path.exists();
-        translate_flags_with(&flag, true, root_path_exists, |mut ev| {
+        let root = if flag.contains(StreamFlags::ROOT_CHANGED) {
+            let tracked = unsafe { &(*info).watches }
+                .get(path)
+                .is_some_and(|mode| mode.target_mode == TargetMode::TrackPath);
+            let gone_roots = unsafe { &(*info).gone_roots };
+            Some(match std::fs::metadata(path) {
+                Ok(meta) => {
+                    if tracked && !GoneRoots::lock(gone_roots).roots.remove(path) {
+                        RootChange::Reported
+                    } else {
+                        RootChange::Present {
+                            is_dir: meta.is_dir(),
+                        }
+                    }
+                }
+                Err(_) => {
+                    if tracked {
+                        GoneRoots::went(gone_roots, path, event_handler_mutex);
+                    }
+                    RootChange::Gone
+                }
+            })
+        } else {
+            None
+        };
+        translate_flags_with(&flag, true, root, |mut ev| {
             ev.paths.push(path.to_path_buf());
 
             let event_handler =
@@ -810,6 +955,7 @@ impl Watcher for FsEventWatcher {
 impl Drop for FsEventWatcher {
     fn drop(&mut self) {
         self.stop();
+        GoneRoots::lock(&self.gone_roots).stopped = true;
     }
 }
 
@@ -872,12 +1018,13 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<crate::Result<Event>>();
         let event_handler: Arc<Mutex<dyn EventHandler>> = Arc::new(Mutex::new(tx));
 
-        let mut recursive_info = HashMap::default();
-        recursive_info.insert(PathBuf::from("/tmp"), true);
+        let mut watches = HashMap::default();
+        watches.insert(PathBuf::from("/tmp"), WatchMode::recursive());
 
         let context = Box::new(StreamContextInfo {
             event_handler,
-            recursive_info,
+            watches,
+            gone_roots: Arc::default(),
         });
         let context_ptr = Box::into_raw(context) as *mut libc::c_void;
 
@@ -929,12 +1076,13 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<crate::Result<Event>>();
         let event_handler: Arc<Mutex<dyn EventHandler>> = Arc::new(Mutex::new(tx));
 
-        let mut recursive_info = HashMap::default();
-        recursive_info.insert(PathBuf::from("/tmp"), true);
+        let mut watches = HashMap::default();
+        watches.insert(PathBuf::from("/tmp"), WatchMode::recursive());
 
         let context = Box::new(StreamContextInfo {
             event_handler,
-            recursive_info,
+            watches,
+            gone_roots: Arc::default(),
         });
         let context_ptr = Box::into_raw(context) as *mut libc::c_void;
 
@@ -988,12 +1136,12 @@ mod tests {
 
     #[test]
     fn translate_flags_ignores_is_file_only_events() {
-        assert!(translate_flags(&StreamFlags::IS_FILE, true, false).is_empty());
+        assert!(translate_flags(&StreamFlags::IS_FILE, true, None).is_empty());
         assert!(
             translate_flags(
                 &(StreamFlags::IS_FILE | StreamFlags::ITEM_CLONED),
                 true,
-                false
+                None
             )
             .is_empty(),
             "type-only clone flags should not produce events"
@@ -1005,7 +1153,7 @@ mod tests {
         let create = translate_flags(
             &(StreamFlags::ITEM_CREATED | StreamFlags::IS_FILE | StreamFlags::ITEM_CLONED),
             true,
-            false,
+            None,
         );
         assert_eq!(create.len(), 1);
         assert_eq!(create[0].kind, EventKind::Create(CreateKind::File));
@@ -1017,7 +1165,7 @@ mod tests {
                 | StreamFlags::IS_FILE
                 | StreamFlags::ITEM_CLONED),
             true,
-            false,
+            None,
         );
         assert_eq!(modify.len(), 2);
         assert!(
@@ -1044,7 +1192,7 @@ mod tests {
                 | StreamFlags::IS_FILE
                 | StreamFlags::ITEM_CLONED),
             true,
-            false,
+            None,
         );
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].info(), Some("root changed"));
@@ -1480,6 +1628,34 @@ mod tests {
         std::fs::rename(&parent, &new_parent).expect("rename");
 
         rx.wait_unordered([expected(&child).remove_any()]);
+    }
+
+    #[test]
+    fn rename_parent_of_watched_paths_and_back() {
+        let tmpdir = testdir();
+        let (mut watcher, rx) = watcher();
+
+        let parent = tmpdir.path().join("parent");
+        let dir = parent.join("dir");
+        let file = parent.join("file");
+        std::fs::create_dir_all(&dir).expect("create_dir_all");
+        std::fs::write(&file, "1").expect("write");
+
+        watcher.watch_recursively(&dir);
+        watcher.watch_nonrecursively(&file);
+
+        let new_parent = tmpdir.path().join("renamed_parent");
+        std::fs::rename(&parent, &new_parent).expect("rename away");
+        rx.wait_unordered([expected(&dir).remove_any(), expected(&file).remove_any()]);
+
+        std::fs::rename(&new_parent, &parent).expect("rename back");
+        rx.wait_unordered([
+            expected(&dir).create_folder(),
+            expected(&file).create_file(),
+        ]);
+
+        std::fs::write(&file, "2").expect("write");
+        rx.wait_unordered([expected(&file).modify_data_content()]);
     }
 
     #[test]
