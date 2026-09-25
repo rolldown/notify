@@ -1721,12 +1721,15 @@ pub mod tests {
     }
 
     /// Waits for the watcher to report an error; a creation of `root` before it fails the test.
+    /// Waits for the error that stands in for the `Create(File | Folder)` the watcher derives
+    /// for a root that came back. The handle of the parent still reports the entry itself, as
+    /// `Create(Any)`, like every other backend's parent watch does.
     fn wait_error_instead_of_create(rx: &Receiver, root: &Path) -> Error {
         loop {
             match rx.try_recv() {
                 Ok(Err(error)) => return error,
                 Ok(Ok(event)) => assert!(
-                    !matches!(event.kind, EventKind::Create(_))
+                    !matches!(event.kind, EventKind::Create(kind) if kind != crate::event::CreateKind::Any)
                         || !event.paths.iter().any(|path| path == root),
                     "a root that is not watched was reported as created: {event:?}"
                 ),
