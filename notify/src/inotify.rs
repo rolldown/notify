@@ -309,8 +309,8 @@ impl EventLoop {
                                 continue;
                             };
 
-                            // The watched directories are not ignored, but their entries can be.
-                            // An ignored entry is handled as if it did not exist.
+                            // drop events of ignored entries; a watched directory itself is
+                            // never ignored
                             let kind = if event.mask.contains(EventMask::ISDIR) {
                                 EntryKind::Dir
                             } else {
@@ -759,7 +759,7 @@ impl EventLoop {
     #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: PathBuf) -> Result<()> {
         match self.watches.remove(&path) {
-            // watching an ignored path does nothing, and so does unwatching it
+            // an ignored path is never watched, so unwatching it is not an error
             None if self.ignore_filter.is_path_ignored(&path) => {}
             None => return Err(Error::watch_not_found().add_path(path)),
             Some(watch_mode) => {
@@ -1001,7 +1001,7 @@ mod tests {
         watcher.watch_recursively(root);
 
         std::fs::create_dir(root.join("node_modules")).expect("create dir");
-        // created last, so the ignored directory has been seen once it is watched
+        // created last: once it is watched, the ignored directory has been handled
         std::fs::create_dir(root.join("src")).expect("create dir");
 
         assert!(

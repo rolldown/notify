@@ -464,7 +464,7 @@ impl FsEventWatcher {
         };
         match self.watches.remove(&p) {
             Some(_) => Ok(()),
-            // watching an ignored path does nothing, and so does unwatching it
+            // an ignored path is never watched, so unwatching it is not an error
             None if self.ignore_filter.is_path_ignored(&p) => Ok(()),
             None => Err(Error::watch_not_found()),
         }
@@ -758,8 +758,7 @@ unsafe fn callback_impl(
             continue;
         }
 
-        // FSEvents watches recursively inside the kernel, so the events of ignored paths can only
-        // be dropped here.
+        // FSEvents cannot skip ignored paths, so drop their events here
         let kind = if flag.contains(StreamFlags::IS_DIR) {
             EntryKind::Dir
         } else if flag.intersects(StreamFlags::IS_FILE | StreamFlags::IS_SYMLINK) {

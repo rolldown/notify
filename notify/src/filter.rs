@@ -12,7 +12,7 @@ pub enum EntryKind {
     /// The path is anything but a directory.
     File,
 
-    /// The watcher cannot tell, for example because the path does not exist (anymore).
+    /// The watcher cannot tell, for example because the path does not exist.
     Unknown,
 }
 
@@ -28,10 +28,9 @@ impl From<FileType> for EntryKind {
 
 type Ignored = dyn Fn(&Path, EntryKind) -> bool + Send + Sync;
 
-/// Decides which paths a watcher ignores.
+/// The ignore filter of a watcher, see [`Config::with_ignored`](crate::Config::with_ignored).
 ///
-/// Installed with [`Config::with_ignored`](crate::Config::with_ignored), which documents what the
-/// filter function must do. The default filter ignores nothing. Clones share the same function.
+/// The default filter ignores nothing. Clones share the same filter function.
 #[derive(Clone, Default)]
 pub struct IgnoreFilter(Option<Arc<Ignored>>);
 
@@ -41,8 +40,7 @@ impl IgnoreFilter {
         Self(Some(Arc::new(ignored)))
     }
 
-    /// Returns whether `path` is ignored, that is whether the filter function returns `true`
-    /// for it.
+    /// Returns whether the filter ignores `path`.
     #[must_use]
     pub fn is_ignored(&self, path: &Path, kind: EntryKind) -> bool {
         self.0.as_ref().is_some_and(|ignored| ignored(path, kind))
@@ -60,9 +58,9 @@ impl IgnoreFilter {
         }
     }
 
-    /// Walks a directory tree without yielding ignored entries or descending into ignored
-    /// directories. The root of the walk is not filtered, it is a watched path or the watcher
-    /// already asked about it.
+    /// Walks a directory tree, skipping ignored entries and everything inside them.
+    ///
+    /// The root of the walk is not filtered, the caller has already checked it.
     pub(crate) fn walk(
         &self,
         walk_dir: WalkDir,
@@ -220,8 +218,8 @@ mod watcher_tests {
         fs::remove_file(root.join("src/debug.log")).expect("remove");
         fs::remove_dir_all(root.join("src/node_modules")).expect("remove dir");
 
-        // kqueue registers a directory again when a sub directory is added or removed, which may
-        // swallow the events of other entries of that directory, so use another one
+        // kqueue re-registers a directory when a sub directory comes or goes and may miss other
+        // events in it meanwhile, so use a different directory
         fs::write(root.join("lib/index.js"), "").expect("write");
 
         let paths = event_paths(&mut rx, root);

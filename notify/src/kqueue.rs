@@ -255,7 +255,7 @@ impl EventLoop {
                                         .filter_map(std::result::Result::ok)
                                         .map(|f| (f.path(), entry_kind(&f)))
                                         .filter(|(f, _)| !self.watch_handles.contains(f))
-                                        // an ignored file is never watched, so it is no new file
+                                        // ignored entries are never watched, so they are not new
                                         .filter(|(f, kind)| {
                                             !self.ignore_filter.is_ignored(f, *kind)
                                         })
@@ -567,8 +567,7 @@ impl EventLoop {
         Ok(())
     }
 
-    /// Walks the entries of a recursive watch. Adding and removing the watch must visit the same
-    /// entries.
+    /// Walks the entries of a recursive watch, the same way for adding and removing it.
     fn walk(
         &self,
         path: &Path,
@@ -609,7 +608,7 @@ impl EventLoop {
     #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: &Path) -> Result<()> {
         match self.watches.remove(path) {
-            // watching an ignored path does nothing, and so does unwatching it
+            // an ignored path is never watched, so unwatching it is not an error
             None if self.ignore_filter.is_path_ignored(path) => {}
             None => return Err(Error::watch_not_found()),
             Some(watch_mode) => {
@@ -895,11 +894,11 @@ mod tests {
 
         std::fs::create_dir(root.join("node_modules")).expect("create dir");
         std::fs::write(root.join("debug.log"), "").expect("write");
-        // A new sub directory makes the watcher register `root` again, and it may miss what
-        // happens meanwhile. The second reply comes after the pending events have been handled.
+        // A new sub directory makes the watcher re-register `root`, and it may miss what happens
+        // meanwhile. Two replies make sure the pending events have been handled.
         watcher.get_watch_handles();
         watcher.get_watch_handles();
-        // created last, so the ignored entries have been seen once it is watched
+        // created last: once it is watched, the ignored entries have been handled
         std::fs::create_dir(root.join("src")).expect("create dir");
 
         assert!(

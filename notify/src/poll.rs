@@ -258,7 +258,7 @@ mod data {
 
         pub fn remove_watch(&mut self, path: &Path) -> Result<()> {
             if self.watches.remove(path).is_none() {
-                // watching an ignored path does nothing, and so does unwatching it
+                // an ignored path is never watched, so unwatching it is not an error
                 return if self.ignore_filter.is_path_ignored(path) {
                     Ok(())
                 } else {

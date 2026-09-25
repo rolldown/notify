@@ -751,8 +751,8 @@ unsafe extern "system" fn handle_event(
                 .join(PathBuf::from(OsString::from_wide(encoded_path))),
         );
 
-        // ReadDirectoryChangesW watches recursively inside the kernel, so the events of ignored
-        // paths can only be dropped here. It doesn't tell us if the path is a file or a dir.
+        // ReadDirectoryChangesW cannot skip ignored paths, so drop their events here. It does not
+        // say whether the path is a directory.
         let skip = !is_event_covered(&request.data.watches.borrow(), &path)
             || request
                 .data

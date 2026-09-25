@@ -242,38 +242,33 @@ impl Config {
 
     /// Ignore the paths for which `ignored` returns `true`.
     ///
-    /// An ignored path is treated as if it did not exist: it is not watched, not scanned and
-    /// never reported in an event.
+    /// An ignored path is never watched, scanned or reported. This also applies to the paths
+    /// passed to [`Watcher::watch`](crate::Watcher::watch): watching or unwatching an ignored
+    /// path succeeds and does nothing. Only the non-ignored side of a rename is reported.
+    ///
+    /// The filter is called with one path at a time and gets no information about the parent
+    /// directories. To ignore a directory with everything inside it, it must return `true` for
+    /// every path below that directory, as a glob over the whole path does. `kind` says whether
+    /// the path is a directory, or [`EntryKind::Unknown`] if the watcher cannot tell: for a path
+    /// that does not exist, and for every event on Windows.
+    ///
+    /// inotify, kqueue and poll do not descend into ignored directories, so no watch resources
+    /// are spent on them. FSEvents and Windows watch recursively in the kernel and drop the
+    /// events of ignored paths instead.
+    ///
+    /// The filter runs on the watcher thread: it must be fast, must not block, and must always
+    /// return the same answer for the same arguments.
+    ///
+    /// This can't be changed during runtime. Nothing is ignored by default.
     ///
     /// ```
     /// use notify::Config;
     ///
-    /// // ignore all `node_modules` directories and everything below them
+    /// // ignore every `node_modules` directory and everything inside it
     /// let config = Config::default().with_ignored(|path, _kind| {
     ///     path.components().any(|component| component.as_os_str() == "node_modules")
     /// });
     /// ```
-    ///
-    /// - The filter is asked about one path at a time, in the same form as the path is reported
-    ///   in events, and it decides on its own: the watcher does not ask about the parent
-    ///   directories. So the filter must return `true` for everything below an ignored directory
-    ///   as well, like the example does, or like a glob matched against the whole path.
-    /// - The filter applies to all paths, including the ones passed to
-    ///   [`Watcher::watch`](crate::Watcher::watch): watching or unwatching an ignored path
-    ///   succeeds but does nothing.
-    /// - `kind` tells whether the path is a directory. It is [`EntryKind::Unknown`] if the
-    ///   watcher cannot tell, for example for a watched path that does not exist, and for all
-    ///   events on Windows.
-    /// - Backends that walk the file tree (inotify, kqueue and poll) do not descend into ignored
-    ///   directories, which saves their watch resources, and never ask about their entries.
-    ///   FSEvents and Windows watch recursively inside the kernel, so they see the entries of
-    ///   ignored directories and rely on the filter to drop them.
-    /// - A rename between an ignored and a non-ignored path is reported like a rename out of
-    ///   or into the watched directory.
-    /// - The filter runs on the watcher thread. It must be fast, must not block and must always
-    ///   return the same answer for the same arguments.
-    ///
-    /// The filter cannot be changed later, create a new watcher instead.
     #[must_use]
     pub fn with_ignored(
         mut self,
@@ -289,7 +284,7 @@ impl Config {
         &self.ignored
     }
 
-    /// Returns a copy that does not keep the ignore filter, and what it captured, alive.
+    /// Returns a copy without the ignore filter.
     pub(crate) fn without_ignored(&self) -> Self {
         Self {
             ignored: IgnoreFilter::default(),

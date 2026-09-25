@@ -110,8 +110,7 @@ impl Error {
 
     /// Creates a new "invalid config" error from the given `Config`.
     ///
-    /// The error does not keep the filter of [`Config::with_ignored`], an error may outlive the
-    /// watcher by far.
+    /// The ignore filter is left out, so the error does not keep it alive.
     #[must_use]
     pub fn invalid_config(config: &Config) -> Self {
         Self::new(ErrorKind::InvalidConfig(config.without_ignored()))

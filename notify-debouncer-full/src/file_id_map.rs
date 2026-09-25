@@ -36,7 +36,7 @@ impl FileIdCache for FileIdMap {
     }
 
     fn add_path(&mut self, path: &Path, watch_mode: WatchMode) {
-        // the watcher reports nothing about ignored paths, so there is no need to cache them
+        // the watcher never reports ignored paths, so they are not cached
         if self.ignore_filter.is_path_ignored(path) {
             return;
         }

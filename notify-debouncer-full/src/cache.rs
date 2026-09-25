@@ -34,11 +34,10 @@ pub trait FileIdCache {
         }
     }
 
-    /// Set the filter of the watcher, see [`notify::Config::with_ignored`].
+    /// Sets the ignore filter of the watcher, see [`notify::Config::with_ignored`].
     ///
-    /// This will be called once by the debouncer, before any path is added. The watcher reports
-    /// nothing about ignored paths, so a cache that scans directories should neither cache
-    /// ignored entries nor descend into ignored directories.
+    /// The debouncer calls this once, before any path is added. A cache that scans directories
+    /// should skip ignored entries, the watcher never reports them.
     ///
     /// The default implementation does nothing.
     fn set_ignore_filter(&mut self, _ignore_filter: IgnoreFilter) {}
