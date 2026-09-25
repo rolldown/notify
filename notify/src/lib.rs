@@ -67,7 +67,14 @@
 //!
 //! ### Parent folder deletion
 //!
-//! If you want to receive an event for a deletion of folder `b` for the path `/a/b/..`, you will have to watch its parent `/a`.
+//! A watch with [`TargetMode::TrackPath`] reports the deletion of the watched path itself, also
+//! when a directory above it is deleted or moved away, and reports the path as created when it is
+//! reachable again; see [`TargetMode`] for the limits of each backend. A watch with
+//! [`TargetMode::NoTrack`] is not tracked through its ancestors, and what it reports when a
+//! directory above it goes differs by backend: kqueue, and inotify in most cases, follow the moved
+//! entity and report it under its old path; FSEvents and [`PollWatcher`] report the path as
+//! removed. To receive an event for a deletion of folder `b` for the path `/a/b/..` on every
+//! backend, watch its parent `/a`.
 //! See [here](https://github.com/notify-rs/notify/issues/403) for more details.
 //!
 //! ### Pseudo Filesystems like /proc, /sys

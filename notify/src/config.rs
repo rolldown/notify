@@ -34,6 +34,11 @@ impl WatchMode {
         }
     }
 
+    /// Only the FSEvents backend never upgrades a watch in place.
+    #[cfg_attr(
+        all(target_os = "macos", not(feature = "macos_kqueue")),
+        expect(dead_code)
+    )]
     pub(crate) fn upgrade_with(&mut self, other: WatchMode) {
         self.recursive_mode = self.recursive_mode.upgraded_with(other.recursive_mode);
         self.target_mode = self.target_mode.upgraded_with(other.target_mode);
@@ -59,6 +64,11 @@ impl RecursiveMode {
         }
     }
 
+    /// Only the FSEvents backend never upgrades a watch in place.
+    #[cfg_attr(
+        all(target_os = "macos", not(feature = "macos_kqueue")),
+        expect(dead_code)
+    )]
     pub(crate) fn upgraded_with(self, other: Self) -> Self {
         match self {
             RecursiveMode::Recursive => self,
@@ -85,7 +95,30 @@ pub enum TargetMode {
     /// The path is tracked through every ancestor: when a directory above it is moved away or
     /// deleted, the path is reported as removed; when the path is reachable again, it is reported
     /// as created and watched again. A path below directories that do not exist yet can be
-    /// watched, and is reported once it appears.
+    /// watched, and is reported once it appears. The native watchers report a directory that
+    /// comes back without its content; `PollWatcher` reports each entry.
+    ///
+    /// On inotify, kqueue and Windows, an ancestor that cannot be examined (permission denied, a
+    /// symlink loop) makes `watch` fail rather than wait for the path, while an ancestor above the
+    /// parent that can be examined but not watched (a directory that can be searched but not
+    /// listed) is skipped, so that a directory below it that moves away or comes back is not
+    /// always noticed. FSEvents and `PollWatcher` accept such a path: `PollWatcher` reports an
+    /// error on each poll until it can reach the path, FSEvents reports the path's events once it
+    /// can be reached. A path that comes back but cannot be watched is reported as an error
+    /// through the handler rather than as created, and is armed again by watching it again.
+    ///
+    /// On inotify, kqueue and Windows, an ancestor that is a symlink to a directory is followed
+    /// when the link is removed and created again later; a link replaced at once (as `ln -sfn`
+    /// does) or a move of the directory it points to is not noticed. FSEvents resolves symlinks
+    /// when the path is watched and reports events under the resolved path. On inotify, a
+    /// directory reached through several spellings (a symlink and its real path) is reported under
+    /// each spelling that a watched path covers. On FSEvents,
+    /// paths folded into a common stream path can go unreported when their directory is swapped
+    /// or goes and comes back within a few milliseconds, and once the directories above a watched
+    /// path were deleted two or more levels deep and restored while watching, their later moves
+    /// are not reported until the next `watch` or `unwatch`.
+    ///
+    /// Unwatching a path keeps the watches that other watched paths still need.
     TrackPath,
 
     /// Does not track the file path, nor the physical entity.
@@ -93,11 +126,22 @@ pub enum TargetMode {
     /// If the underlying physical entity (inode/File ID) is replaced
     /// (e.g., by a move/rename operation), the watch stops monitoring.
     ///
+    /// The path is not tracked through its ancestors. On inotify, a `NoTrack` file that is
+    /// reported through its parent's watch (the parent was already watched for a `TrackPath`
+    /// path) is reported as removed and dropped when a directory above it moves, although the
+    /// file still exists; watching it again arms it anew. In the other watch order it follows
+    /// the file.
+    ///
     /// TODO: fsevents backend and Windows backend and polling backend does not unwatch on physical entity change yet. <https://github.com/rolldown/notify/issues/33>
     NoTrack,
 }
 
 impl TargetMode {
+    /// Only the FSEvents backend never upgrades a watch in place.
+    #[cfg_attr(
+        all(target_os = "macos", not(feature = "macos_kqueue")),
+        expect(dead_code)
+    )]
     pub(crate) fn upgraded_with(self, other: Self) -> Self {
         match self {
             TargetMode::TrackPath => self,
