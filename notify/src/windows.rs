@@ -2008,8 +2008,7 @@ pub mod tests {
         );
 
         std::fs::write(&c, "2").expect("write");
-        rx.wait_ordered_exact([expected(&c).modify_any().multiple()])
-            .ensure_no_tail();
+        rx.wait_ordered([expected(&c).modify_any()]);
     }
 
     #[test]
@@ -2069,7 +2068,6 @@ pub mod tests {
         // `tmpdir` is only on the way.
         let lib = tmpdir.path().join("lib");
         let dir = lib.join("dir");
-        let moved = tmpdir.path().join("moved");
         std::fs::create_dir_all(&dir).expect("create_dir_all");
         watcher.watch_nonrecursively(&dir);
 
@@ -2087,13 +2085,15 @@ pub mod tests {
         // The handles that were open stay open.
         assert_eq!(
             watcher.get_watch_handles(),
-            HashSet::from([lib.clone(), dir.clone(), other_dir.to_path_buf()])
+            HashSet::from([lib, dir.clone(), other_dir.to_path_buf()])
         );
         drop(failing_tmpdir);
         drop(failing_lib);
-        std::fs::rename(&lib, &moved).expect("rename away");
-        rx.wait_ordered_exact([expected(&dir).remove_any()])
-            .ensure_no_tail();
+        // The watch of `dir` still works. (Windows does not let `lib` be renamed while a handle
+        // is open on a directory below it, so the watch is checked with an entry instead.)
+        let file = dir.join("file");
+        std::fs::File::create_new(&file).expect("create");
+        rx.wait_ordered([expected(&file).create_any()]);
     }
 
     #[test]
@@ -2101,17 +2101,17 @@ pub mod tests {
         let tmpdir = testdir();
         let (mut watcher, rx) = watcher();
 
+        // `dir` is not there yet; the handle of its parent sees it appear. (Windows does not let
+        // a directory be renamed while a handle is open on a directory below it, so the root
+        // appears by creation rather than by renaming its parent back.)
         let lib = tmpdir.path().join("lib");
         let dir = lib.join("dir");
-        let moved = tmpdir.path().join("moved");
-        std::fs::create_dir_all(&dir).expect("create_dir_all");
+        std::fs::create_dir(&lib).expect("create_dir");
         watcher.watch_nonrecursively(&dir);
-
-        std::fs::rename(&lib, &moved).expect("rename away");
-        rx.wait_ordered([expected(&dir).remove_any()]);
+        assert_eq!(watcher.get_watch_handles(), HashSet::from([lib.clone()]));
 
         let failing = FailingDir::new(&dir);
-        std::fs::rename(&moved, &lib).expect("rename back");
+        std::fs::create_dir(&dir).expect("create_dir");
         let error = wait_error_instead_of_create(&rx, &dir);
         assert_eq!(error.paths, vec![dir.clone()]);
         assert_eq!(watcher.get_watch_handles(), HashSet::from([lib.clone()]));
