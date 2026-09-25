@@ -1,6 +1,7 @@
 //! Configuration types
 
-use std::time::Duration;
+use crate::filter::{EntryKind, IgnoreFilter};
+use std::{path::Path, time::Duration};
 
 /// Default maximum number of paths to pass to FSEvents, chosen to stay
 /// well under the macOS default file descriptor soft limit (256).
@@ -123,7 +124,7 @@ impl TargetMode {
 /// ```
 ///
 /// Some options can be changed during runtime, others have to be set when creating the watcher backend.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct Config {
     /// See [Config::with_poll_interval]
     poll_interval: Option<Duration>,
@@ -135,6 +136,9 @@ pub struct Config {
 
     /// See [Config::with_max_fsevent_paths]
     max_fsevent_paths: usize,
+
+    /// See [Config::with_ignored]
+    ignored: IgnoreFilter,
 }
 
 impl Config {
@@ -235,6 +239,58 @@ impl Config {
     pub fn max_fsevent_paths(&self) -> usize {
         self.max_fsevent_paths
     }
+
+    /// Ignore the paths for which `ignored` returns `true`.
+    ///
+    /// An ignored path is never watched, scanned or reported. This also applies to the paths
+    /// passed to [`Watcher::watch`](crate::Watcher::watch): watching or unwatching an ignored
+    /// path succeeds and does nothing. Only the non-ignored side of a rename is reported.
+    ///
+    /// The filter is called with one path at a time and gets no information about the parent
+    /// directories. To ignore a directory with everything inside it, it must return `true` for
+    /// every path below that directory, as a glob over the whole path does. `kind` says whether
+    /// the path is a directory, or [`EntryKind::Unknown`] if the watcher cannot tell: for a path
+    /// that does not exist, and for every event on Windows.
+    ///
+    /// inotify, kqueue and poll do not descend into ignored directories, so no watch resources
+    /// are spent on them. FSEvents and Windows watch recursively in the kernel and drop the
+    /// events of ignored paths instead.
+    ///
+    /// The filter runs on the watcher thread: it must be fast, must not block, and must always
+    /// return the same answer for the same arguments.
+    ///
+    /// This can't be changed during runtime. Nothing is ignored by default.
+    ///
+    /// ```
+    /// use notify::Config;
+    ///
+    /// // ignore every `node_modules` directory and everything inside it
+    /// let config = Config::default().with_ignored(|path, _kind| {
+    ///     path.components().any(|component| component.as_os_str() == "node_modules")
+    /// });
+    /// ```
+    #[must_use]
+    pub fn with_ignored(
+        mut self,
+        ignored: impl Fn(&Path, EntryKind) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.ignored = IgnoreFilter::new(ignored);
+        self
+    }
+
+    /// Returns current setting.
+    #[must_use]
+    pub fn ignored(&self) -> &IgnoreFilter {
+        &self.ignored
+    }
+
+    /// Returns a copy without the ignore filter.
+    pub(crate) fn without_ignored(&self) -> Self {
+        Self {
+            ignored: IgnoreFilter::default(),
+            ..self.clone()
+        }
+    }
 }
 
 impl Default for Config {
@@ -244,6 +300,7 @@ impl Default for Config {
             compare_contents: false,
             follow_symlinks: true,
             max_fsevent_paths: DEFAULT_MAX_FSEVENT_PATHS,
+            ignored: IgnoreFilter::default(),
         }
     }
 }

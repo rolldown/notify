@@ -462,9 +462,10 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + S
     timeout: Duration,
     tick_rate: Option<Duration>,
     mut event_handler: F,
-    file_id_cache: C,
+    mut file_id_cache: C,
     config: notify::Config,
 ) -> Result<Debouncer<T, C>, Error> {
+    file_id_cache.set_ignore_filter(config.ignored().clone());
     let data = Arc::new(Mutex::new(DebounceDataInner::new(file_id_cache, timeout)));
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -569,6 +570,40 @@ mod tests {
     use tempfile::tempdir;
     use testing::TestCase;
     use time::MockTime;
+
+    #[test]
+    fn file_id_cache_gets_the_ignore_filter_of_the_watcher() {
+        struct Cache(Arc<Mutex<notify::IgnoreFilter>>);
+
+        impl FileIdCache for Cache {
+            fn cached_file_id(&self, _path: &Path) -> Option<impl AsRef<FileId>> {
+                Option::<&FileId>::None
+            }
+
+            fn add_path(&mut self, _path: &Path, _watch_mode: WatchMode) {}
+
+            fn remove_path(&mut self, _path: &Path) {}
+
+            fn set_ignore_filter(&mut self, ignore_filter: notify::IgnoreFilter) {
+                *self.0.lock().unwrap() = ignore_filter;
+            }
+        }
+
+        let config = notify::Config::default().with_ignored(|_, _| true);
+        let ignore_filter = Arc::default();
+        let _debouncer = new_debouncer_opt::<_, notify::NullWatcher, _>(
+            Duration::from_millis(10),
+            None,
+            |_: DebounceEventResult| {},
+            Cache(Arc::clone(&ignore_filter)),
+            config,
+        )
+        .unwrap();
+
+        // the default filter ignores nothing, so this is the filter of the config
+        let ignore_filter = ignore_filter.lock().unwrap();
+        assert!(ignore_filter.is_ignored(Path::new("path"), notify::EntryKind::Unknown));
+    }
 
     #[rstest]
     fn state(

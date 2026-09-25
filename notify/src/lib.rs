@@ -177,6 +177,7 @@
 
 pub use config::{Config, RecursiveMode, TargetMode, WatchMode};
 pub use error::{Error, ErrorKind, Result};
+pub use filter::{EntryKind, IgnoreFilter};
 pub use notify_types::event::{self, Event, EventKind};
 #[cfg(test)]
 use std::collections::HashSet;
@@ -249,6 +250,7 @@ mod bimap;
 mod config;
 mod consolidating_path_trie;
 mod error;
+mod filter;
 
 #[cfg(test)]
 pub(crate) mod test;
@@ -376,6 +378,8 @@ pub trait Watcher {
     ///
     /// If the `path` is a file, `watch_mode.recursive_mode` will be ignored and events will be delivered only
     /// for the file.
+    ///
+    /// Paths that are ignored by [`Config::with_ignored`] are not watched.
     fn watch(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()>;
 
     /// Stop watching a path.
