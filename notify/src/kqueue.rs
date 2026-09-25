@@ -256,7 +256,9 @@ impl EventLoop {
                                         .map(|f| (f.path(), entry_kind(&f)))
                                         .filter(|(f, _)| !self.watch_handles.contains(f))
                                         // an ignored file is never watched, so it is no new file
-                                        .filter(|(f, kind)| !self.ignore_filter.matches(f, *kind))
+                                        .filter(|(f, kind)| {
+                                            !self.ignore_filter.is_ignored(f, *kind)
+                                        })
                                         .map(|(f, _)| f);
                                     let mut found_new_file = false;
                                     for file in files {
@@ -551,7 +553,10 @@ impl EventLoop {
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.filter_map(std::result::Result::ok) {
                     let entry_path = entry.path();
-                    if !self.ignore_filter.matches(&entry_path, entry_kind(&entry)) {
+                    if !self
+                        .ignore_filter
+                        .is_ignored(&entry_path, entry_kind(&entry))
+                    {
                         self.add_single_watch(entry_path)?;
                     }
                 }

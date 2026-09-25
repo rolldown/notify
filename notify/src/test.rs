@@ -372,13 +372,15 @@ pub fn channel_with_config<W: Watcher>(config: &ChannelConfig) -> (TestWatcher<W
     )
 }
 
-/// Whether the filter of [`ignoring_config`] matches the path
+/// The filter of [`ignoring_config`]
 pub fn is_ignored(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| name == "node_modules")
+    path.components()
+        .any(|component| component.as_os_str() == "node_modules")
         || path.extension().is_some_and(|extension| extension == "log")
 }
 
-/// Creates a [`Config`] that ignores everything named `node_modules` and all `*.log` files
+/// Creates a [`Config`] that ignores everything named `node_modules`, everything below it, and
+/// all `*.log` files
 pub fn ignoring_config() -> Config {
     Config::default().with_ignored(|path, _| is_ignored(path))
 }

@@ -602,7 +602,7 @@ mod tests {
 
         // the default filter ignores nothing, so this is the filter of the config
         let ignore_filter = ignore_filter.lock().unwrap();
-        assert!(ignore_filter.matches(Path::new("path"), notify::EntryKind::Unknown));
+        assert!(ignore_filter.is_ignored(Path::new("path"), notify::EntryKind::Unknown));
     }
 
     #[rstest]

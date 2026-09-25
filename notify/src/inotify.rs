@@ -316,7 +316,7 @@ impl EventLoop {
                             } else {
                                 EntryKind::File
                             };
-                            if event.name.is_some() && self.ignore_filter.matches(&path, kind) {
+                            if event.name.is_some() && self.ignore_filter.is_ignored(&path, kind) {
                                 continue;
                             }
 

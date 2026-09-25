@@ -49,7 +49,8 @@ impl FileIdCache for FileIdMap {
             .max_depth(Self::dir_scan_depth(is_recursive))
             .into_iter()
             .filter_entry(|entry| {
-                entry.depth() == 0 || !ignore_filter.matches(entry.path(), entry.file_type().into())
+                entry.depth() == 0
+                    || !ignore_filter.is_ignored(entry.path(), entry.file_type().into())
             })
             .filter_map(|entry| {
                 let path = entry.ok()?.into_path();
@@ -73,7 +74,6 @@ impl FileIdCache for FileIdMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::EntryKind;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -88,9 +88,10 @@ mod tests {
         let mut cache = FileIdMap::new();
         cache.set_ignore_filter(IgnoreFilter::new({
             let visited = Arc::clone(&visited);
-            move |path, kind| {
+            move |path, _| {
                 visited.lock().unwrap().push(path.to_path_buf());
-                kind == EntryKind::Dir && path.ends_with("node_modules")
+                path.components()
+                    .any(|component| component.as_os_str() == "node_modules")
             }
         }));
         cache.add_path(root, WatchMode::recursive());

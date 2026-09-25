@@ -243,29 +243,31 @@ impl Config {
     /// Ignore the paths for which `ignored` returns `true`.
     ///
     /// An ignored path is treated as if it did not exist: it is not watched, not scanned and
-    /// never reported in an event. Ignoring a directory ignores everything below it.
+    /// never reported in an event.
     ///
     /// ```
-    /// use notify::{Config, EntryKind};
+    /// use notify::Config;
     ///
-    /// // ignore all `node_modules` directories
-    /// let config = Config::default().with_ignored(|path, kind| {
-    ///     // the kind is not always known, see below
-    ///     kind != EntryKind::File && path.file_name().is_some_and(|name| name == "node_modules")
+    /// // ignore all `node_modules` directories and everything below them
+    /// let config = Config::default().with_ignored(|path, _kind| {
+    ///     path.components().any(|component| component.as_os_str() == "node_modules")
     /// });
     /// ```
     ///
-    /// - The filter applies to all paths, including the ones passed to
-    ///   [`Watcher::watch`](crate::Watcher::watch): watching or unwatching a path that is ignored,
-    ///   or that lies below an ignored directory, succeeds but does nothing.
     /// - The filter is asked about one path at a time, in the same form as the path is reported
-    ///   in events. It does not have to test the parent directories, the watcher does that.
-    /// - [`EntryKind::Unknown`] is passed if the watcher cannot tell whether the path is a
-    ///   directory, for example for a watched path that does not exist, and for all events on
-    ///   Windows.
+    ///   in events, and it decides on its own: the watcher does not ask about the parent
+    ///   directories. So the filter must return `true` for everything below an ignored directory
+    ///   as well, like the example does, or like a glob matched against the whole path.
+    /// - The filter applies to all paths, including the ones passed to
+    ///   [`Watcher::watch`](crate::Watcher::watch): watching or unwatching an ignored path
+    ///   succeeds but does nothing.
+    /// - `kind` tells whether the path is a directory. It is [`EntryKind::Unknown`] if the
+    ///   watcher cannot tell, for example for a watched path that does not exist, and for all
+    ///   events on Windows.
     /// - Backends that walk the file tree (inotify, kqueue and poll) do not descend into ignored
-    ///   directories, which saves their watch resources. FSEvents and Windows watch recursively
-    ///   inside the kernel, so they can only drop the events of ignored paths.
+    ///   directories, which saves their watch resources, and never ask about their entries.
+    ///   FSEvents and Windows watch recursively inside the kernel, so they see the entries of
+    ///   ignored directories and rely on the filter to drop them.
     /// - A rename between an ignored and a non-ignored path is reported like a rename out of
     ///   or into the watched directory.
     /// - The filter runs on the watcher thread. It must be fast, must not block and must always

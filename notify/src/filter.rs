@@ -30,8 +30,8 @@ type Ignored = dyn Fn(&Path, EntryKind) -> bool + Send + Sync;
 
 /// Decides which paths a watcher ignores.
 ///
-/// Installed with [`Config::with_ignored`](crate::Config::with_ignored). The default filter
-/// ignores nothing. Clones share the same function.
+/// Installed with [`Config::with_ignored`](crate::Config::with_ignored), which documents what the
+/// filter function must do. The default filter ignores nothing. Clones share the same function.
 #[derive(Clone, Default)]
 pub struct IgnoreFilter(Option<Arc<Ignored>>);
 
@@ -41,24 +41,11 @@ impl IgnoreFilter {
         Self(Some(Arc::new(ignored)))
     }
 
-    /// Returns whether the filter function returns `true` for `path` itself.
-    #[must_use]
-    pub fn matches(&self, path: &Path, kind: EntryKind) -> bool {
-        self.0.as_ref().is_some_and(|ignored| ignored(path, kind))
-    }
-
-    /// Returns whether `path` is ignored: the filter matches `path` or one of its parent
-    /// directories.
+    /// Returns whether `path` is ignored, that is whether the filter function returns `true`
+    /// for it.
     #[must_use]
     pub fn is_ignored(&self, path: &Path, kind: EntryKind) -> bool {
-        self.0.is_some()
-            && (self.matches(path, kind)
-                || path
-                    .ancestors()
-                    .skip(1)
-                    // the last ancestor of a relative path is empty
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .any(|parent| self.matches(parent, EntryKind::Dir)))
+        self.0.as_ref().is_some_and(|ignored| ignored(path, kind))
     }
 
     /// Like [`IgnoreFilter::is_ignored`], but looks up the kind of `path` in the file system.
@@ -82,7 +69,7 @@ impl IgnoreFilter {
     ) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> + use<> {
         let filter = self.clone();
         walk_dir.into_iter().filter_entry(move |entry| {
-            entry.depth() == 0 || !filter.matches(entry.path(), entry.file_type().into())
+            entry.depth() == 0 || !filter.is_ignored(entry.path(), entry.file_type().into())
         })
     }
 }
@@ -96,15 +83,15 @@ impl fmt::Debug for IgnoreFilter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
-
-    fn node_modules() -> IgnoreFilter {
-        IgnoreFilter::new(|path, kind| {
-            kind == EntryKind::Dir && path.file_name().is_some_and(|name| name == "node_modules")
-        })
-    }
+    use crate::test::testdir;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     #[test]
     fn default_filter_ignores_nothing() {
@@ -114,20 +101,77 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_has_no_empty_parent() {
-        let filter = IgnoreFilter::new(|path, _| path.as_os_str().is_empty());
-        assert!(!filter.is_ignored(Path::new("src/a.js"), EntryKind::File));
+    fn is_path_ignored_looks_up_the_kind() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        fs::create_dir(root.join("dir")).expect("create dir");
+        fs::write(root.join("file"), "").expect("write");
+
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let filter = IgnoreFilter::new({
+            let asked = Arc::clone(&asked);
+            move |path, kind| {
+                asked.lock().unwrap().push((path.to_path_buf(), kind));
+                true
+            }
+        });
+        assert!(filter.is_path_ignored(&root.join("dir")));
+        assert!(filter.is_path_ignored(&root.join("file")));
+        assert!(filter.is_path_ignored(&root.join("missing")));
+
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                (root.join("dir"), EntryKind::Dir),
+                (root.join("file"), EntryKind::File),
+                (root.join("missing"), EntryKind::Unknown),
+            ]
+        );
     }
 
     #[test]
-    fn path_below_an_ignored_directory_is_ignored() {
-        let filter = node_modules();
-        assert!(filter.is_ignored(Path::new("/p/node_modules"), EntryKind::Dir));
-        assert!(filter.is_ignored(Path::new("/p/node_modules/pkg/a.js"), EntryKind::File));
-        assert!(!filter.matches(Path::new("/p/node_modules/pkg/a.js"), EntryKind::File));
-        assert!(!filter.is_ignored(Path::new("/p/src/a.js"), EntryKind::File));
-        // the filter decides based on the kind
-        assert!(!filter.is_ignored(Path::new("/p/node_modules"), EntryKind::File));
+    fn walk_does_not_descend_into_ignored_directories() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("create dir");
+        fs::write(root.join("node_modules/pkg/index.js"), "").expect("write");
+        fs::create_dir(root.join("src")).expect("create dir");
+        fs::write(root.join("src/index.js"), "").expect("write");
+
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let filter = IgnoreFilter::new({
+            let asked = Arc::clone(&asked);
+            move |path, _| {
+                asked.lock().unwrap().push(path.to_path_buf());
+                path.file_name().is_some_and(|name| name == "node_modules")
+            }
+        });
+
+        let mut walked: Vec<PathBuf> = filter
+            .walk(WalkDir::new(root))
+            .map(|entry| entry.expect("walk").into_path())
+            .collect();
+        walked.sort();
+        assert_eq!(
+            walked,
+            [
+                root.to_path_buf(),
+                root.join("src"),
+                root.join("src/index.js")
+            ]
+        );
+
+        // the root is not filtered, and the entries of an ignored directory are never seen
+        let mut asked = std::mem::take(&mut *asked.lock().unwrap());
+        asked.sort();
+        assert_eq!(
+            asked,
+            [
+                root.join("node_modules"),
+                root.join("src"),
+                root.join("src/index.js")
+            ]
+        );
     }
 }
 
@@ -148,14 +192,13 @@ mod watcher_tests {
         for path in &paths {
             let below_root = path.strip_prefix(root).unwrap_or(path);
             assert!(
-                !below_root.ancestors().any(is_ignored),
+                !is_ignored(below_root),
                 "ignored path was reported: {}",
                 path.display()
             );
         }
         paths
     }
-
     #[test]
     fn ignored_paths_are_not_reported() {
         let tmpdir = testdir();
