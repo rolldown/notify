@@ -387,7 +387,7 @@ pub trait Watcher {
     /// # Errors
     ///
     /// Returns an error in the case that `path` has not been watched or if removing the watch
-    /// fails.
+    /// fails. Unwatching a path that is ignored by [`Config::with_ignored`] is not an error.
     fn unwatch(&mut self, path: &Path) -> Result<()>;
 
     /// Add/remove paths to watch.

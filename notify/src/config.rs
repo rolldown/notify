@@ -256,8 +256,9 @@ impl Config {
     /// are spent on them. FSEvents and Windows watch recursively in the kernel and drop the
     /// events of ignored paths instead.
     ///
-    /// The filter runs on the watcher thread: it must be fast, must not block, and must always
-    /// return the same answer for the same arguments.
+    /// The filter runs on the watcher thread and on the thread that calls
+    /// [`Watcher::watch`](crate::Watcher::watch): it must be fast, must not block, and must
+    /// always return the same answer for the same arguments.
     ///
     /// This can't be changed during runtime. Nothing is ignored by default.
     ///

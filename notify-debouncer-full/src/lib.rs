@@ -357,6 +357,7 @@ pub struct Debouncer<T: Watcher, C: FileIdCache> {
     debouncer_thread: Option<std::thread::JoinHandle<()>>,
     data: DebounceData<C>,
     stop: Arc<AtomicBool>,
+    ignore_filter: notify::IgnoreFilter,
 }
 
 impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
@@ -416,7 +417,10 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
 
     pub fn watch(&mut self, path: impl AsRef<Path>, watch_mode: WatchMode) -> notify::Result<()> {
         self.watcher.watch(path.as_ref(), watch_mode)?;
-        self.add_root(path.as_ref(), watch_mode);
+        // the watcher does not watch an ignored path, so it is not a root
+        if !self.ignore_filter.is_path_ignored(path.as_ref()) {
+            self.add_root(path.as_ref(), watch_mode);
+        }
         Ok(())
     }
 
@@ -465,7 +469,8 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + S
     mut file_id_cache: C,
     config: notify::Config,
 ) -> Result<Debouncer<T, C>, Error> {
-    file_id_cache.set_ignore_filter(config.ignored().clone());
+    let ignore_filter = config.ignored().clone();
+    file_id_cache.set_ignore_filter(ignore_filter.clone());
     let data = Arc::new(Mutex::new(DebounceDataInner::new(file_id_cache, timeout)));
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -531,6 +536,7 @@ pub fn new_debouncer_opt<F: DebounceEventHandler, T: Watcher, C: FileIdCache + S
         debouncer_thread: Some(thread),
         data,
         stop,
+        ignore_filter,
     };
 
     Ok(guard)
@@ -603,6 +609,49 @@ mod tests {
         // the default filter ignores nothing, so this is the filter of the config
         let ignore_filter = ignore_filter.lock().unwrap();
         assert!(ignore_filter.is_ignored(Path::new("path"), notify::EntryKind::Unknown));
+    }
+
+    #[test]
+    fn ignored_path_is_not_a_root() {
+        // a cache that does not use the ignore filter
+        struct Cache(Arc<Mutex<Vec<PathBuf>>>);
+
+        impl FileIdCache for Cache {
+            fn cached_file_id(&self, _path: &Path) -> Option<impl AsRef<FileId>> {
+                Option::<&FileId>::None
+            }
+
+            fn add_path(&mut self, path: &Path, _watch_mode: WatchMode) {
+                self.0.lock().unwrap().push(path.to_path_buf());
+            }
+
+            fn remove_path(&mut self, _path: &Path) {}
+        }
+
+        let config = notify::Config::default().with_ignored(|path, _| {
+            path.components()
+                .any(|component| component.as_os_str() == "node_modules")
+        });
+        let added = Arc::default();
+        let mut debouncer = new_debouncer_opt::<_, notify::NullWatcher, _>(
+            Duration::from_millis(10),
+            None,
+            |_: DebounceEventResult| {},
+            Cache(Arc::clone(&added)),
+            config,
+        )
+        .unwrap();
+
+        let ignored = Path::new("/project/node_modules/pkg");
+        let src = Path::new("/project/src");
+        debouncer.watch(ignored, WatchMode::recursive()).unwrap();
+        debouncer.watch(src, WatchMode::recursive()).unwrap();
+
+        assert_eq!(*added.lock().unwrap(), [src]);
+        assert_eq!(
+            debouncer.data.lock().unwrap().roots,
+            [(src.to_path_buf(), WatchMode::recursive())]
+        );
     }
 
     #[rstest]
