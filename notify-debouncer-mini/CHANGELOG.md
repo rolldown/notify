@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.8.10...rolldown-notify-debouncer-mini-v0.9.0) - 2026-09-29
+
+### Added
+
+- [**breaking**] support ignored path filtering ([#122](https://github.com/rolldown/notify/pull/122))
+
 ## [0.8.10](https://github.com/rolldown/notify/compare/rolldown-notify-debouncer-mini-v0.8.9...rolldown-notify-debouncer-mini-v0.8.10) - 2026-08-20
 
 ### Other
