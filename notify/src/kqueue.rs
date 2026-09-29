@@ -6,6 +6,7 @@
 
 use super::event::*;
 use super::{Config, Error, EventHandler, RecursiveMode, Result, WatchMode, Watcher};
+use crate::filter::{EntryKind, IgnoreFilter};
 #[cfg(test)]
 use crate::{BoundSender, bounded};
 use crate::{ErrorKind, PathsMut, Receiver, Sender, TargetMode, unbounded};
@@ -39,6 +40,7 @@ struct EventLoop {
     watches: HashMap<PathBuf, WatchMode, FxBuildHasher>,
     watch_handles: HashSet<PathBuf, FxBuildHasher>,
     follow_symlinks: bool,
+    ignore_filter: IgnoreFilter,
 }
 
 /// Watcher implementation based on inotify
@@ -62,6 +64,7 @@ impl EventLoop {
         kqueue: kqueue::Watcher,
         event_handler: Box<dyn EventHandler>,
         follow_symlinks: bool,
+        ignore_filter: IgnoreFilter,
     ) -> Result<Self> {
         let (event_loop_tx, event_loop_rx) = unbounded::<EventLoopMsg>();
         let poll = mio::Poll::new()?;
@@ -84,6 +87,7 @@ impl EventLoop {
             watches: HashMap::default(),
             watch_handles: HashSet::default(),
             follow_symlinks,
+            ignore_filter,
         };
         Ok(event_loop)
     }
@@ -249,8 +253,13 @@ impl EventLoop {
                                 Ok(dir) => {
                                     let files = dir
                                         .filter_map(std::result::Result::ok)
-                                        .map(|f| f.path())
-                                        .filter(|f| !self.watch_handles.contains(f));
+                                        .map(|f| (f.path(), entry_kind(&f)))
+                                        .filter(|(f, _)| !self.watch_handles.contains(f))
+                                        // ignored entries are never watched, so they are not new
+                                        .filter(|(f, kind)| {
+                                            !self.ignore_filter.is_ignored(f, *kind)
+                                        })
+                                        .map(|(f, _)| f);
                                     let mut found_new_file = false;
                                     for file in files {
                                         found_new_file = true;
@@ -460,6 +469,11 @@ impl EventLoop {
     /// The caller of this function must call `self.kqueue.watch()` afterwards to register the new watch.
     #[tracing::instrument(level = "trace", skip(self))]
     fn add_watch_inner(&mut self, path: PathBuf, watch_mode: WatchMode) -> Result<()> {
+        // an ignored path is not watched
+        if self.ignore_filter.is_path_ignored(&path) {
+            return Ok(());
+        }
+
         if let Some(existing) = self.watches.get(&path) {
             let need_upgrade_to_recursive = match existing.recursive_mode {
                 RecursiveMode::Recursive => false,
@@ -530,7 +544,7 @@ impl EventLoop {
         is_dir: bool,
     ) -> Result<()> {
         if is_recursive {
-            for entry in WalkDir::new(&path).follow_links(self.follow_symlinks) {
+            for entry in self.walk(&path) {
                 let entry = entry.map_err(map_walkdir_error)?;
                 self.add_single_watch(entry.into_path())?;
             }
@@ -538,13 +552,28 @@ impl EventLoop {
             self.add_single_watch(path.clone())?;
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.filter_map(std::result::Result::ok) {
-                    self.add_single_watch(entry.path())?;
+                    let entry_path = entry.path();
+                    if !self
+                        .ignore_filter
+                        .is_ignored(&entry_path, entry_kind(&entry))
+                    {
+                        self.add_single_watch(entry_path)?;
+                    }
                 }
             }
         } else {
             self.add_single_watch(path)?;
         }
         Ok(())
+    }
+
+    /// Walks the entries of a recursive watch, the same way for adding and removing it.
+    fn walk(
+        &self,
+        path: &Path,
+    ) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> + use<> {
+        self.ignore_filter
+            .walk(WalkDir::new(path).follow_links(self.follow_symlinks))
     }
 
     /// Adds a single watch to the kqueue.
@@ -579,6 +608,8 @@ impl EventLoop {
     #[tracing::instrument(level = "trace", skip(self))]
     fn remove_watch(&mut self, path: &Path) -> Result<()> {
         match self.watches.remove(path) {
+            // an ignored path is never watched, so unwatching it is not an error
+            None if self.ignore_filter.is_path_ignored(path) => {}
             None => return Err(Error::watch_not_found()),
             Some(watch_mode) => {
                 self.remove_maybe_recursive_watch(path, watch_mode.recursive_mode.is_recursive())?;
@@ -594,7 +625,7 @@ impl EventLoop {
     fn remove_maybe_recursive_watch(&mut self, path: &Path, is_recursive: bool) -> Result<()> {
         if is_recursive {
             self.remove_single_watch(path)?;
-            for entry in WalkDir::new(path).follow_links(self.follow_symlinks) {
+            for entry in self.walk(path) {
                 let entry = entry.map_err(map_walkdir_error)?;
                 if entry.path() == path {
                     continue;
@@ -620,6 +651,12 @@ impl EventLoop {
         self.watch_handles.remove(path);
         Ok(())
     }
+}
+
+fn entry_kind(entry: &std::fs::DirEntry) -> EntryKind {
+    entry
+        .file_type()
+        .map_or(EntryKind::Unknown, EntryKind::from)
 }
 
 fn map_walkdir_error(e: walkdir::Error) -> Error {
@@ -671,9 +708,10 @@ impl KqueueWatcher {
     fn from_event_handler(
         event_handler: Box<dyn EventHandler>,
         follow_symlinks: bool,
+        ignore_filter: IgnoreFilter,
     ) -> Result<Self> {
         let kqueue = kqueue::Watcher::new()?;
-        let event_loop = EventLoop::new(kqueue, event_handler, follow_symlinks)?;
+        let event_loop = EventLoop::new(kqueue, event_handler, follow_symlinks, ignore_filter)?;
         let channel = event_loop.event_loop_tx.clone();
         let waker = Arc::clone(&event_loop.event_loop_waker);
         event_loop.run();
@@ -751,7 +789,11 @@ impl Watcher for KqueueWatcher {
     /// Create a new watcher.
     #[tracing::instrument(level = "debug", skip(event_handler))]
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
-        Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
+        Self::from_event_handler(
+            Box::new(event_handler),
+            config.follow_symlinks(),
+            config.ignored().clone(),
+        )
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -801,6 +843,90 @@ mod tests {
 
     fn watcher() -> (TestWatcher<KqueueWatcher>, test::Receiver) {
         channel()
+    }
+
+    fn ignoring_watcher() -> (TestWatcher<KqueueWatcher>, test::Receiver) {
+        ignoring_channel()
+    }
+
+    #[test]
+    fn ignored_entries_are_not_watched() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).expect("create dir");
+        std::fs::write(root.join("node_modules/pkg/index.js"), "").expect("write");
+        std::fs::write(root.join("debug.log"), "").expect("write");
+        std::fs::write(root.join("index.js"), "").expect("write");
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_recursively(root);
+
+        assert_eq!(
+            watcher.get_watch_handles_in(root),
+            HashSet::from([root.to_path_buf(), root.join("index.js")])
+        );
+    }
+
+    #[test]
+    fn ignored_children_of_a_non_recursive_watch_are_not_watched() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        std::fs::create_dir(root.join("node_modules")).expect("create dir");
+        std::fs::write(root.join("debug.log"), "").expect("write");
+        std::fs::write(root.join("index.js"), "").expect("write");
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_nonrecursively(root);
+
+        assert_eq!(
+            watcher.get_watch_handles_in(root),
+            HashSet::from([root.to_path_buf(), root.join("index.js")])
+        );
+    }
+
+    #[test]
+    fn ignored_entries_created_at_runtime_are_not_watched() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_recursively(root);
+
+        std::fs::create_dir(root.join("node_modules")).expect("create dir");
+        std::fs::write(root.join("debug.log"), "").expect("write");
+        // A new sub directory makes the watcher re-register `root`, and it may miss what happens
+        // meanwhile. Two replies make sure the pending events have been handled.
+        watcher.get_watch_handles();
+        watcher.get_watch_handles();
+        // created last: once it is watched, the ignored entries have been handled
+        std::fs::create_dir(root.join("src")).expect("create dir");
+
+        assert!(
+            test::sleep_until(
+                || watcher.get_watch_handles().contains(&root.join("src")),
+                Duration::from_secs(5)
+            ),
+            "the new directory was never watched: {:#?}",
+            watcher.get_watch_handles()
+        );
+        assert_eq!(
+            watcher.get_watch_handles_in(root),
+            HashSet::from([root.to_path_buf(), root.join("src")])
+        );
+    }
+
+    #[test]
+    fn unwatch_with_ignored_entries() {
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).expect("create dir");
+        std::fs::write(root.join("index.js"), "").expect("write");
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_recursively(root);
+        watcher.watcher.unwatch(root).expect("unwatch");
+
+        assert_eq!(watcher.get_watch_handles_in(root), HashSet::default());
     }
 
     #[expect(clippy::print_stdout)]

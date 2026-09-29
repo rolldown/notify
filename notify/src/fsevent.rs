@@ -15,6 +15,7 @@
 #![allow(non_upper_case_globals, dead_code)]
 
 use crate::consolidating_path_trie::ConsolidatingPathTrie;
+use crate::filter::{EntryKind, IgnoreFilter};
 use crate::{
     Config, Error, ErrorKind, EventHandler, PathsMut, Result, Sender, WatchMode, Watcher, unbounded,
 };
@@ -74,6 +75,7 @@ pub struct FsEventWatcher {
     runloop: Option<(cf::CFRetained<cf::CFRunLoop>, thread::JoinHandle<()>)>,
     watches: HashMap<PathBuf, bool, FxBuildHasher>,
     max_fsevent_paths: usize,
+    ignore_filter: IgnoreFilter,
 }
 
 // FSEvents applies the path limit across live streams, so all watcher instances
@@ -124,6 +126,8 @@ impl fmt::Debug for FsEventWatcher {
             .field("event_handler", &Arc::as_ptr(&self.event_handler))
             .field("runloop", &self.runloop)
             .field("watches", &self.watches)
+            .field("max_fsevent_paths", &self.max_fsevent_paths)
+            .field("ignore_filter", &self.ignore_filter)
             .finish()
     }
 }
@@ -355,6 +359,7 @@ fn translate_flags_with(
 struct StreamContextInfo {
     event_handler: Arc<Mutex<dyn EventHandler>>,
     recursive_info: HashMap<PathBuf, bool, FxBuildHasher>,
+    ignore_filter: IgnoreFilter,
 }
 
 // Free the context when the stream created by `FSEventStreamCreate` is released.
@@ -370,27 +375,38 @@ extern "C-unwind" fn release_context(info: *const libc::c_void) {
     }
 }
 
-struct FsEventPathsMut<'a>(&'a mut FsEventWatcher);
+struct FsEventPathsMut<'a> {
+    watcher: &'a mut FsEventWatcher,
+    /// Whether a watch was added or removed, so the stream has to restart
+    changed: bool,
+}
 impl<'a> FsEventPathsMut<'a> {
     fn new(watcher: &'a mut FsEventWatcher) -> Self {
-        watcher.stop();
-        Self(watcher)
+        Self {
+            watcher,
+            changed: false,
+        }
     }
 }
 impl PathsMut for FsEventPathsMut<'_> {
     #[tracing::instrument(level = "debug", skip(self))]
     fn add(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
-        self.0.append_path(path, watch_mode)
+        self.changed |= self.watcher.append_path(path, watch_mode)?;
+        Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     fn remove(&mut self, path: &Path) -> Result<()> {
-        self.0.remove_path(path)
+        self.changed |= self.watcher.remove_path(path)?;
+        Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     fn commit(self: Box<Self>) -> Result<()> {
-        self.0.run()
+        if self.changed {
+            self.watcher.restart()?;
+        }
+        Ok(())
     }
 }
 
@@ -398,6 +414,7 @@ impl FsEventWatcher {
     fn from_event_handler(
         event_handler: Arc<Mutex<dyn EventHandler>>,
         max_fsevent_paths: usize,
+        ignore_filter: IgnoreFilter,
     ) -> Self {
         FsEventWatcher {
             paths: cf::CFMutableArray::empty(),
@@ -410,21 +427,30 @@ impl FsEventWatcher {
             runloop: None,
             watches: HashMap::default(),
             max_fsevent_paths,
+            ignore_filter,
         }
     }
 
     fn watch_inner(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
-        self.stop();
-        let result = self.append_path(path, watch_mode);
-        self.run()?;
-        result
+        if self.append_path(path, watch_mode)? {
+            self.restart()?;
+        }
+        Ok(())
     }
 
     fn unwatch_inner(&mut self, path: &Path) -> Result<()> {
+        if self.remove_path(path)? {
+            self.restart()?;
+        }
+        Ok(())
+    }
+
+    /// Restarts the stream with the current watches.
+    ///
+    /// A restart drops the events in between, so it is only done after the watches have changed.
+    fn restart(&mut self) -> Result<()> {
         self.stop();
-        let result = self.remove_path(path);
-        self.run()?;
-        result
+        self.run()
     }
 
     #[inline]
@@ -449,33 +475,43 @@ impl FsEventWatcher {
         }
     }
 
-    fn remove_path(&mut self, path: &Path) -> Result<()> {
+    /// Returns whether a watch was removed, which is not the case for an ignored path.
+    fn remove_path(&mut self, path: &Path) -> Result<bool> {
         let p = if let Ok(canonicalized_path) = path.canonicalize() {
             canonicalized_path
         } else {
             path.to_owned()
         };
         match self.watches.remove(&p) {
-            Some(_) => Ok(()),
+            Some(_) => Ok(true),
+            // an ignored path is never watched, so unwatching it is not an error
+            None if self.ignore_filter.is_path_ignored(&p) => Ok(false),
             None => Err(Error::watch_not_found()),
         }
     }
 
     // https://github.com/thibaudgg/rb-fsevent/blob/master/ext/fsevent_watch/main.c
-    fn append_path(&mut self, path: &Path, watch_mode: WatchMode) -> Result<()> {
-        if (!path.exists() && watch_mode.target_mode != TargetMode::TrackPath)
-            || path == Path::new("")
-        {
-            return Err(Error::path_not_found().add_path(path.into()));
-        }
+    /// Returns whether a watch was added, which is not the case for an ignored path.
+    fn append_path(&mut self, path: &Path, watch_mode: WatchMode) -> Result<bool> {
         let canonical_path = path
             .to_path_buf()
             .canonicalize()
             .unwrap_or(path.to_path_buf());
 
+        // an ignored path is not watched
+        if self.ignore_filter.is_path_ignored(&canonical_path) {
+            return Ok(false);
+        }
+
+        if (!path.exists() && watch_mode.target_mode != TargetMode::TrackPath)
+            || path == Path::new("")
+        {
+            return Err(Error::path_not_found().add_path(path.into()));
+        }
+
         self.watches
             .insert(canonical_path, watch_mode.recursive_mode.is_recursive());
-        Ok(())
+        Ok(true)
     }
 
     fn update_paths_based_on_watches(&mut self) {
@@ -552,6 +588,7 @@ impl FsEventWatcher {
         let context = Box::into_raw(Box::new(StreamContextInfo {
             event_handler: Arc::clone(&self.event_handler),
             recursive_info: self.watches.clone(),
+            ignore_filter: self.ignore_filter.clone(),
         }));
 
         let mut stream_context = fs::FSEventStreamContext {
@@ -742,6 +779,18 @@ unsafe fn callback_impl(
             continue;
         }
 
+        // FSEvents cannot skip ignored paths, so drop their events here
+        let kind = if flag.contains(StreamFlags::IS_DIR) {
+            EntryKind::Dir
+        } else if flag.intersects(StreamFlags::IS_FILE | StreamFlags::IS_SYMLINK) {
+            EntryKind::File
+        } else {
+            EntryKind::Unknown
+        };
+        if unsafe { &(*info).ignore_filter }.is_ignored(path, kind) {
+            continue;
+        }
+
         tracing::trace!(?path, ?flag, "FSEvent event received");
 
         let translated_count = translated_event_count(&flag, true);
@@ -777,6 +826,7 @@ impl Watcher for FsEventWatcher {
         Ok(Self::from_event_handler(
             Arc::new(Mutex::new(event_handler)),
             config.max_fsevent_paths(),
+            config.ignored().clone(),
         ))
     }
 
@@ -824,6 +874,42 @@ mod tests {
 
     fn watcher() -> (TestWatcher<FsEventWatcher>, Receiver) {
         channel()
+    }
+
+    fn ignoring_watcher() -> (TestWatcher<FsEventWatcher>, Receiver) {
+        ignoring_channel()
+    }
+
+    #[test]
+    fn ignored_path_does_not_restart_the_stream() {
+        // every stream runs on a new thread
+        fn stream_thread(watcher: &TestWatcher<FsEventWatcher>) -> Option<thread::ThreadId> {
+            let (_, thread) = watcher.watcher.runloop.as_ref()?;
+            Some(thread.thread().id())
+        }
+
+        let tmpdir = testdir();
+        let root = tmpdir.path();
+        let ignored = root.join("node_modules");
+        let src = root.join("src");
+        std::fs::create_dir(&ignored).expect("create dir");
+        std::fs::create_dir(&src).expect("create dir");
+
+        let (mut watcher, _rx) = ignoring_watcher();
+        watcher.watch_recursively(root);
+        let stream = stream_thread(&watcher);
+        assert!(stream.is_some());
+
+        watcher.watch_recursively(&ignored);
+        watcher.watcher.unwatch(&ignored).expect("unwatch");
+        let mut paths = watcher.watcher.paths_mut();
+        paths.add(&ignored, WatchMode::recursive()).expect("add");
+        paths.remove(&ignored).expect("remove");
+        paths.commit().expect("commit");
+        assert_eq!(stream_thread(&watcher), stream);
+
+        watcher.watch_recursively(&src);
+        assert_ne!(stream_thread(&watcher), stream);
     }
 
     #[expect(clippy::print_stdout)]
@@ -878,6 +964,7 @@ mod tests {
         let context = Box::new(StreamContextInfo {
             event_handler,
             recursive_info,
+            ignore_filter: IgnoreFilter::default(),
         });
         let context_ptr = Box::into_raw(context) as *mut libc::c_void;
 
@@ -935,6 +1022,7 @@ mod tests {
         let context = Box::new(StreamContextInfo {
             event_handler,
             recursive_info,
+            ignore_filter: IgnoreFilter::default(),
         });
         let context_ptr = Box::into_raw(context) as *mut libc::c_void;
 
