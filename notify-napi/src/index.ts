@@ -1,0 +1,163 @@
+import { lstatSync, statSync, type Stats } from 'node:fs'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
+import * as binding from '#binding'
+
+export type WatcherEventName =
+  | 'add'
+  | 'addDir'
+  | 'change'
+  | 'unlink'
+  | 'unlinkDir'
+  | 'error'
+export type WatchMatcher =
+  | string
+  | RegExp
+  | ((path: string, stats?: Stats) => boolean)
+
+export interface WatcherEvent {
+  kind: WatcherEventName
+  path?: string
+  isDir?: boolean
+  error?: string
+}
+
+export interface WatcherOptions {
+  usePolling?: boolean
+  pollInterval?: number
+  followSymlinks?: boolean
+  ignored?: WatchMatcher | WatchMatcher[]
+  cwd?: string
+}
+
+export interface AddOptions {
+  emitInitial?: boolean
+}
+
+export interface WatchedEntry {
+  path: string
+  isDir: boolean
+}
+
+type CallbackMatcher = Exclude<WatchMatcher, string>
+
+const toArray = <T>(value: T | ReadonlyArray<T>): T[] =>
+  Array.isArray(value) ? [...value] : [value as T]
+const normalize = (value: string): string => value.split(sep).join('/')
+
+function matches(
+  matchers: CallbackMatcher[],
+  path: string,
+  stats: Stats | undefined,
+): boolean {
+  return matchers.some((matcher) => {
+    if (matcher instanceof RegExp) return matcher.test(path)
+    return matcher(path) || Boolean(stats && matcher(path, stats))
+  })
+}
+
+function createIgnored(ignored: WatcherOptions['ignored'], options: WatcherOptions) {
+  const values = ignored == null ? [] : toArray(ignored)
+  const cwd = resolve(options.cwd ?? process.cwd())
+  const stringMatchers = values.filter((value): value is string => typeof value === 'string')
+  const callbackMatchers = values.filter(
+    (value): value is CallbackMatcher => typeof value !== 'string',
+  )
+  const globs = stringMatchers.flatMap((value) => {
+    const negated = value.startsWith('!')
+    const pattern = negated ? value.slice(1) : value
+    if (isAbsolute(pattern)) return [value]
+    return [value, `${negated ? '!' : ''}${normalize(resolve(cwd, pattern))}`]
+  })
+  if (callbackMatchers.length === 0) return { globs, predicate: undefined }
+
+  const stat = options.followSymlinks === false ? lstatSync : statSync
+  const predicate = (path: string): boolean => {
+    let stats: Stats | undefined
+    try {
+      stats = stat(path, { throwIfNoEntry: false })
+    } catch {}
+    const absolute = normalize(path)
+    const local = normalize(relative(cwd, path))
+    for (const candidate of local && local !== absolute ? [absolute, local] : [absolute]) {
+      if (matches(callbackMatchers, candidate, stats)) return true
+    }
+    return false
+  }
+  return { globs, predicate }
+}
+
+export class Watcher {
+  closed = false
+  private readonly native: InstanceType<typeof binding.Watcher>
+
+  constructor(callback: (event: WatcherEvent) => void, options: WatcherOptions = {}) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function')
+    const { ignored, cwd, ...nativeOptions } = options
+    const matcher = createIgnored(ignored, { cwd, ...nativeOptions })
+    this.native = new binding.Watcher(
+      (event) => callback(event as WatcherEvent),
+      { ...nativeOptions, ignored: matcher.globs },
+      matcher.predicate,
+    )
+  }
+
+  add(
+    paths: string | ReadonlyArray<string>,
+    options: AddOptions = {},
+  ): WatcherEvent[] {
+    if (this.closed) return []
+    return this.native.add(toArray(paths), options.emitInitial === true) as WatcherEvent[]
+  }
+
+  remove(paths: string | ReadonlyArray<string>): this {
+    if (!this.closed) this.native.remove(toArray(paths))
+    return this
+  }
+
+  entries(): WatchedEntry[] {
+    return this.closed ? [] : this.native.entries()
+  }
+
+  ref(): this {
+    if (!this.closed) this.native.ref()
+    return this
+  }
+
+  unref(): this {
+    if (!this.closed) this.native.unref()
+    return this
+  }
+
+  close(): void {
+    if (!this.closed) {
+      this.closed = true
+      this.native.close()
+    }
+  }
+}
+
+export function watch(
+  paths: string | ReadonlyArray<string>,
+  callback: (event: WatcherEvent) => void,
+  options: WatcherOptions & AddOptions = {},
+): Watcher {
+  const { emitInitial, ...watcherOptions } = options
+  const watcher = new Watcher(callback, watcherOptions)
+  let initial: WatcherEvent[]
+  try {
+    initial = watcher.add(paths, { emitInitial })
+  } catch (error) {
+    watcher.close()
+    throw error
+  }
+  if (initial.length > 0) {
+    queueMicrotask(() => {
+      if (!watcher.closed) initial.forEach(callback)
+    })
+  }
+  return watcher
+}
+
+const notify = { Watcher, watch }
+
+export default notify

@@ -141,13 +141,61 @@ jobs:
           version: "42.0.1"
 
       - name: Build for WASI
-        run: cargo +nightly-2025-11-21 build --target wasm32-wasip1-threads --workspace --verbose
+        # Node-API bindings are built with emnapi by the napi job.
+        run: cargo +nightly-2025-11-21 build --target wasm32-wasip1-threads --workspace --exclude rolldown-notify-napi --verbose
 
       - name: Build examples for WASI
         run: cargo +nightly-2025-11-21 build --examples --target wasm32-wasip1-threads --verbose
 
       - name: Test for WASI
         # `--lib --bins --tests` is to skip doc tests
-        run: cargo +nightly-2025-11-21 test --target wasm32-wasip1-threads --lib --bins --tests --workspace --exclude rolldown-notify-debouncer-full --exclude rolldown-notify-debouncer-mini --verbose -- --nocapture
+        run: cargo +nightly-2025-11-21 test --target wasm32-wasip1-threads --lib --bins --tests --workspace --exclude rolldown-notify-debouncer-full --exclude rolldown-notify-debouncer-mini --exclude rolldown-notify-napi --verbose -- --nocapture
         env:
           WASMTIME_BACKTRACE_DETAILS: 1
+
+  napi:
+    name: Node-API (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [native, wasi]
+    defaults:
+      run:
+        working-directory: notify-napi
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
+        with:
+          save-cache: ${{ github.ref_name == 'main' }}
+          cache-key: napi-${{ matrix.runtime }}
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          package_json_file: notify-napi/package.json
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: notify-napi/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install WASI target
+        if: matrix.runtime == 'wasi'
+        run: rustup target add wasm32-wasip1-threads
+
+      - name: Test native bindings
+        if: matrix.runtime == 'native'
+        run: pnpm test
+
+      - name: Test WASI bindings
+        if: matrix.runtime == 'wasi'
+        run: pnpm run test:wasi
+
+      - name: Check types
+        run: pnpm run typecheck

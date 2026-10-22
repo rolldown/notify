@@ -1,4 +1,7 @@
 /target
+/notify-napi/node_modules
+/notify-napi/target
+/notify-napi/dist
 .*.sw*
 tests/last-fails
 tests/last-run.log
