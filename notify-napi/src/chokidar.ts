@@ -3,12 +3,13 @@ import { lstatSync, statSync, type Stats } from 'node:fs'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
 import {
   Watcher,
+  type Ignored,
   type WatcherEvent,
   type WatchMatcher,
 } from './index.js'
 
 export type WatchEventName = 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir'
-export type { WatchMatcher }
+export type { Ignored, WatchMatcher }
 
 export interface NativeWatchEvent {
   kind: string
@@ -23,7 +24,7 @@ export interface AwaitWriteFinishOptions {
 }
 
 export interface WatchOptions {
-  ignored?: WatchMatcher | WatchMatcher[]
+  ignored?: Ignored
   ignoreInitial?: boolean
   followSymlinks?: boolean
   cwd?: string
@@ -42,18 +43,18 @@ export interface WatchOptions {
 
 const toArray = <T>(value: T | ReadonlyArray<T>): T[] =>
   Array.isArray(value) ? [...value] : [value as T]
-const normalize = (value: string): string => value.split(sep).join('/')
+const normalize = (value: string): string => value.replaceAll(sep, '/')
 
 export class FSWatcher extends EventEmitter {
   readonly options: WatchOptions
   closed = false
-  private readonly cwd: string | undefined
+  private readonly cwd: string
   private readonly watcher: Watcher
 
   constructor(options: WatchOptions = {}) {
     super()
     this.options = options
-    this.cwd = options.cwd ? resolve(options.cwd) : undefined
+    this.cwd = resolve(options.cwd ?? process.cwd())
     this.watcher = new Watcher((event) => this.handle(event), {
       usePolling: options.usePolling,
       pollInterval: options.interval ?? 100,
@@ -131,11 +132,11 @@ export class FSWatcher extends EventEmitter {
   }
 
   private absolute(path: string): string {
-    return resolve(this.cwd ?? process.cwd(), path)
+    return resolve(this.cwd, path)
   }
 
   private display(path: string): string {
-    if (!this.cwd) return path
+    if (!this.options.cwd) return path
     return normalize(relative(this.cwd, path)) || '.'
   }
 
@@ -194,6 +195,4 @@ export function watch(
   }
 }
 
-const notify = { FSWatcher, watch }
-
-export default notify
+export default { FSWatcher, watch }

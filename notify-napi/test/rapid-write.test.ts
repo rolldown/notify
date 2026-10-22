@@ -1,42 +1,34 @@
-'use strict'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { test } from 'vitest'
+import { Watcher } from '@rolldown/notify'
 
-const { test } = require('node:test')
-const { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } = require('node:fs')
-const { tmpdir } = require('node:os')
-const { join } = require('node:path')
+test('watcher reports the final state of rapid writes', async () => {
+  const directory = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-napi-'))
+  const file = join(directory, 'entry.js')
+  writeFileSync(file, "export default 'initial'\n")
 
-let Watcher
-let watcher
-
-const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
-const directory = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-napi-'))
-const file = join(directory, 'entry.js')
-writeFileSync(file, "export default 'initial'\n")
-
-let expected
-let resolveExpected
-let active = true
-test.before(async () => {
-  ;({ Watcher } = await import('@rolldown/notify'))
-  watcher = new Watcher((event) => {
+  let expected: string | undefined
+  let resolveExpected: (() => void) | undefined
+  let active = true
+  const watcher = new Watcher((event) => {
     if (!active || !expected || !['add', 'change'].includes(event.kind) || event.path !== file) {
       return
     }
     if (readFileSync(file, 'utf8').trim() === expected) {
-      resolveExpected()
+      resolveExpected?.()
     }
   })
-})
-
-test('watcher reports the final state of rapid writes', async () => {
   try {
     watcher.add(file)
     await delay(100)
     for (let round = 0; round < 10; round += 1) {
-      const nextEventFor = (value) => {
+      const nextEventFor = (value: string) => {
         expected = `export default '${value}'`
         return Promise.race([
-          new Promise((resolve) => {
+          new Promise<void>((resolve) => {
             resolveExpected = resolve
           }),
           delay(500).then(() => {

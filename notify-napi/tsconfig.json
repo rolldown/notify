@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/*.ts", "test/types.ts", "tsdown.config.mts"]
+  "include": ["src/*.ts", "test/*.ts", "tsdown.config.mts", "vitest.config.mts"]
 }

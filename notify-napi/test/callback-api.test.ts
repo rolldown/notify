@@ -1,23 +1,16 @@
-'use strict'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises'
+import { beforeAll, expect, test } from 'vitest'
+import { Watcher, watch, type WatcherEvent } from '@rolldown/notify'
+import * as chokidar from '@rolldown/notify/chokidar'
+import * as binding from '../dist/binding.mjs'
 
-const assert = require('node:assert/strict')
-const { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } = require('node:fs')
-const { spawnSync } = require('node:child_process')
-const { tmpdir } = require('node:os')
-const { join } = require('node:path')
-const { test } = require('node:test')
-
-let Watcher
-let watch
-let chokidar
-let binding
-
-test.before(async () => {
-  ;({ Watcher, watch } = await import('@rolldown/notify'))
-  chokidar = await import('@rolldown/notify/chokidar')
-  binding = await import('../dist/binding.mjs')
+beforeAll(() => {
   if (process.env.NAPI_RS_FORCE_WASI === 'error') {
-    assert.equal(binding.__napiBindingTarget, 'wasm32-wasi')
+    expect('__napiBindingTarget' in binding && binding.__napiBindingTarget).toBe('wasm32-wasi')
   }
 })
 
@@ -25,23 +18,23 @@ test('root entry point exposes the callback API', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-callback-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
-  const events = []
+  const events: WatcherEvent[] = []
   const watcher = watch(file, (event) => events.push(event), {
     emitInitial: true,
     usePolling: true,
     pollInterval: 25,
   })
   try {
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.ok(watcher instanceof Watcher)
-    assert.ok(events.some((event) => event.kind === 'add' && event.path === file))
-    assert.ok(watcher.entries().some((entry) => entry.path === file))
-    assert.equal(watcher.remove(file), watcher)
+    await immediate()
+    expect(watcher).toBeInstanceOf(Watcher)
+    expect(events.some((event) => event.kind === 'add' && event.path === file)).toBeTruthy()
+    expect(watcher.entries().some((entry) => entry.path === file)).toBeTruthy()
+    expect(watcher.remove(file)).toBe(watcher)
     events.length = 0
     writeFileSync(file, 'export default 2\n')
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    assert.ok(!events.some((event) => event.path === file))
-    assert.deepEqual(watcher.entries(), [])
+    await delay(100)
+    expect(!events.some((event) => event.path === file)).toBeTruthy()
+    expect(watcher.entries()).toEqual([])
   } finally {
     watcher.close()
     rmSync(root, { recursive: true, force: true })
@@ -49,7 +42,7 @@ test('root entry point exposes the callback API', async () => {
 })
 
 test('Chokidar entry point exports FSWatcher', () => {
-  assert.equal(typeof chokidar.FSWatcher, 'function')
+  expect(typeof chokidar.FSWatcher).toBe('function')
 })
 
 test('native binding supports negated ignored globs', async () => {
@@ -63,7 +56,7 @@ test('native binding supports negated ignored globs', async () => {
   mkdirSync(droppedDirectory)
   writeFileSync(dropped, '')
   writeFileSync(kept, '')
-  const events = []
+  const events: binding.WatcherEvent[] = []
   const watcher = new binding.Watcher((event) => events.push(event), {
     ignored: [`${ignored}/**`, `!${keptDirectory}/**`],
     usePolling: true,
@@ -71,16 +64,16 @@ test('native binding supports negated ignored globs', async () => {
   })
   try {
     const initial = watcher.add([root], true)
-    assert.ok(!initial.some((event) => event.path === dropped))
-    assert.ok(initial.some((event) => event.path === kept))
-    assert.ok(!watcher.entries().some((entry) => entry.path === dropped))
-    assert.ok(watcher.entries().some((entry) => entry.path === kept))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(!initial.some((event) => event.path === dropped)).toBeTruthy()
+    expect(initial.some((event) => event.path === kept)).toBeTruthy()
+    expect(!watcher.entries().some((entry) => entry.path === dropped)).toBeTruthy()
+    expect(watcher.entries().some((entry) => entry.path === kept)).toBeTruthy()
+    await delay(50)
     writeFileSync(dropped, 'changed')
     writeFileSync(kept, 'changed')
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    assert.ok(!events.some((event) => event.path === dropped))
-    assert.ok(events.some((event) => event.path === kept))
+    await delay(100)
+    expect(!events.some((event) => event.path === dropped)).toBeTruthy()
+    expect(events.some((event) => event.path === kept)).toBeTruthy()
   } finally {
     watcher.close()
     rmSync(root, { recursive: true, force: true })
@@ -88,9 +81,9 @@ test('native binding supports negated ignored globs', async () => {
 })
 
 test('watch closes the native watcher when add fails', () => {
-  const modulePath = join(__dirname, '..', 'dist', 'index.mjs')
+  const modulePath = new URL('../dist/index.mjs', import.meta.url).href
   const script = `
-    const binding = await import(${JSON.stringify(join(__dirname, '..', 'dist', 'binding.mjs'))})
+    const binding = await import(${JSON.stringify(new URL('../dist/binding.mjs', import.meta.url).href)})
     binding.Watcher.prototype.add = () => { throw new Error('watch failed') }
     const { watch } = await import(${JSON.stringify(modulePath)})
     try { watch('.', () => {}) } catch {}
@@ -99,6 +92,6 @@ test('watch closes the native watcher when add fails', () => {
     timeout: 2000,
     encoding: 'utf8',
   })
-  assert.equal(result.signal, null, result.stderr)
-  assert.equal(result.status, 0, result.stderr)
+  expect(result.signal, result.stderr).toBe(null)
+  expect(result.status, result.stderr).toBe(0)
 })

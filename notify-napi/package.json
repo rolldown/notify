@@ -7,7 +7,7 @@
   "types": "dist/index.d.mts",
   "exports": {
     ".": "./dist/index.mjs",
-    "./chokidar":"./dist/chokidar.mjs"
+    "./chokidar": "./dist/chokidar.mjs"
   },
   "files": [
     "dist"
@@ -17,8 +17,8 @@
     "build:js": "tsdown",
     "build:native": "napi build --platform --release --output-dir dist --esm --js binding.mjs --dts binding.d.mts",
     "build:wasi": "pnpm run build:native --target wasm32-wasip1-threads",
-    "test": "pnpm run build && node --test test/*.test.cjs",
-    "test:wasi": "pnpm run build:wasi && pnpm run build:js && node --test --require ./test/force-wasi.cjs test/*.test.cjs",
+    "test": "pnpm run build && vitest run",
+    "test:wasi": "pnpm run build:wasi && pnpm run build:js && vitest run --mode wasi",
     "typecheck": "tsc"
   },
   "devDependencies": {
@@ -26,7 +26,8 @@
     "@types/node": "^24.19.2",
     "emnapi": "2.0.0-alpha.4",
     "tsdown": "^0.23.1",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   },
   "dependencies": {
     "@emnapi/core": "2.0.0-alpha.4",

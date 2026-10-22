@@ -13,6 +13,7 @@ export type WatchMatcher =
   | string
   | RegExp
   | ((path: string, stats?: Stats) => boolean)
+export type Ignored = WatchMatcher | WatchMatcher[]
 
 export interface WatcherEvent {
   kind: WatcherEventName
@@ -25,7 +26,7 @@ export interface WatcherOptions {
   usePolling?: boolean
   pollInterval?: number
   followSymlinks?: boolean
-  ignored?: WatchMatcher | WatchMatcher[]
+  ignored?: Ignored
   cwd?: string
 }
 
@@ -42,7 +43,7 @@ type CallbackMatcher = Exclude<WatchMatcher, string>
 
 const toArray = <T>(value: T | ReadonlyArray<T>): T[] =>
   Array.isArray(value) ? [...value] : [value as T]
-const normalize = (value: string): string => value.split(sep).join('/')
+const normalize = (value: string): string => value.replaceAll(sep, '/')
 
 function matches(
   matchers: CallbackMatcher[],
@@ -55,7 +56,7 @@ function matches(
   })
 }
 
-function createIgnored(ignored: WatcherOptions['ignored'], options: WatcherOptions) {
+function createIgnored(ignored: Ignored | undefined, options: WatcherOptions) {
   const values = ignored == null ? [] : toArray(ignored)
   const cwd = resolve(options.cwd ?? process.cwd())
   const stringMatchers = values.filter((value): value is string => typeof value === 'string')
@@ -157,7 +158,3 @@ export function watch(
   }
   return watcher
 }
-
-const notify = { Watcher, watch }
-
-export default notify
