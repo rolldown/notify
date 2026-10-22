@@ -1,6 +1,6 @@
 import { lstatSync, statSync, type Stats } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
-import * as binding from '#binding'
+import * as binding from '../dist/binding.mjs'
 
 export type WatcherEventName =
   | 'add'

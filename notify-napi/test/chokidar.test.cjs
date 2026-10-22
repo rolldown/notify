@@ -360,7 +360,9 @@ test('symlinked roots share the canonical watched snapshot', async () => {
   }
 })
 
-test('followSymlinks false does not traverse a symlinked directory', async () => {
+test('followSymlinks false does not traverse a symlinked directory', {
+  skip: process.platform === 'darwin' && 'FSEvents follows symlinked watch roots',
+}, async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-no-follow-'))
   const target = join(root, 'target')
   const link = join(root, 'link')

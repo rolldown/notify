@@ -9,6 +9,6 @@ export default defineConfig({
   fixedExtension: true,
   target: 'node20',
   deps: {
-    neverBundle: [/^#/],
+    neverBundle: ['../dist/binding.mjs'],
   },
 })

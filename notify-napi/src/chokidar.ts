@@ -5,7 +5,7 @@ import {
   Watcher,
   type WatcherEvent,
   type WatchMatcher,
-} from '#index'
+} from './index.js'
 
 export type WatchEventName = 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir'
 export type { WatchMatcher }

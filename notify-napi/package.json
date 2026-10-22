@@ -5,29 +5,9 @@
   "packageManager": "pnpm@12.14.0",
   "module": "dist/index.mjs",
   "types": "dist/index.d.mts",
-  "imports": {
-    "#binding": {
-      "types": "./dist/binding.d.ts",
-      "import": "./dist/binding.mjs",
-      "default": "./dist/binding.mjs"
-    },
-    "#index": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
-    }
-  },
   "exports": {
-    ".": {
-      "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
-    },
-    "./chokidar": {
-      "types": "./dist/chokidar.d.mts",
-      "import": "./dist/chokidar.mjs",
-      "default": "./dist/chokidar.mjs"
-    }
+    ".": "./dist/index.mjs",
+    "./chokidar":"./dist/chokidar.mjs"
   },
   "files": [
     "dist"
@@ -35,7 +15,7 @@
   "scripts": {
     "build": "pnpm run build:native && pnpm run build:js",
     "build:js": "tsdown",
-    "build:native": "napi build --platform --release --output-dir dist --esm --js binding.mjs --dts binding.d.ts",
+    "build:native": "napi build --platform --release --output-dir dist --esm --js binding.mjs --dts binding.d.mts",
     "build:wasi": "pnpm run build:native --target wasm32-wasip1-threads",
     "test": "pnpm run build && node --test test/*.test.cjs",
     "test:wasi": "pnpm run build:wasi && pnpm run build:js && node --test --require ./test/force-wasi.cjs test/*.test.cjs",
