@@ -1,0 +1,19 @@
+notify-napi/package.json
+  s_b9f015ef47003f::t_80e0039f4d3fb4 25,29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5b78d71db30100a38573edc7dcc32303a8302630",
+  "prompts": {},
+  "sessions": {
+    "s_b9f015ef47003f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a162a2-0690-7273-a34e-3be5e01a14ea",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
