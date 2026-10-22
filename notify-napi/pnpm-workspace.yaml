@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@napi-rs/cli@3.10.9'
