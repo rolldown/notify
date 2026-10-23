@@ -725,10 +725,17 @@ impl PollWatcher {
             .name("notify-rs poll loop".to_string())
             .spawn(move || {
                 let mut watch_data = WatchData::new(follow_symlinks, ignore_filter);
+                let mut pending_add: Option<(Sender<Result<()>>, Result<()>)> = None;
 
                 loop {
                     data_builder.update_timestamp();
                     watch_data.rescan(&data_builder);
+                    // Establish the baseline before returning from watch registration.
+                    if let Some((tx, result)) = pending_add.take()
+                        && let Err(e) = tx.send(result)
+                    {
+                        tracing::error!(?e, "failed to send watch response");
+                    }
 
                     // TODO: v7.0 use delay - (Instant::now().saturating_duration_since(start))
                     let result = if let Some(delay) = delay {
@@ -741,16 +748,10 @@ impl PollWatcher {
                     };
                     match result {
                         Ok(EventLoopMsg::AddWatch(path, mode, resp_tx)) => {
-                            let result = resp_tx.send(watch_data.add_watch(path, mode));
-                            if let Err(e) = result {
-                                tracing::error!(?e, "failed to send AddWatch response");
-                            }
+                            pending_add = Some((resp_tx, watch_data.add_watch(path, mode)));
                         }
                         Ok(EventLoopMsg::AddWatchMultiple(paths, resp_tx)) => {
-                            let result = resp_tx.send(watch_data.add_watch_multiple(paths));
-                            if let Err(e) = result {
-                                tracing::error!(?e, "failed to send AddWatchMultiple response");
-                            }
+                            pending_add = Some((resp_tx, watch_data.add_watch_multiple(paths)));
                         }
                         Ok(EventLoopMsg::RemoveWatch(path, resp_tx)) => {
                             let result = resp_tx.send(watch_data.remove_watch(&path));
@@ -848,7 +849,6 @@ impl Drop for PollWatcher {
 mod tests {
     #[cfg(target_family = "wasm")]
     use std::thread::sleep;
-    #[cfg(target_family = "wasm")]
     use std::time::Duration;
 
     use super::PollWatcher;
@@ -909,6 +909,51 @@ mod tests {
     fn poll_watcher_is_send_and_sync() {
         fn check<T: Send + Sync>() {}
         check::<PollWatcher>();
+    }
+
+    #[test]
+    fn watch_registration_waits_for_initial_scan() {
+        for multiple in [false, true] {
+            let tmpdir = testdir();
+            let path = tmpdir.path().to_path_buf();
+
+            let (scan_tx, scan_rx) = std::sync::mpsc::channel();
+            let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+            let watcher = PollWatcher::with_initial_scan(
+                |_| {},
+                crate::Config::default().with_manual_polling(),
+                move |event: super::ScanEvent| {
+                    event.expect("initial scan");
+                    scan_tx.send(()).expect("signal initial scan");
+                    resume_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("resume initial scan");
+                },
+            )
+            .expect("create watcher");
+            let mode = WatchMode::non_recursive();
+            let (response_tx, response_rx) = crate::unbounded();
+            let request = if multiple {
+                super::EventLoopMsg::AddWatchMultiple(vec![(path, mode)], response_tx)
+            } else {
+                super::EventLoopMsg::AddWatch(path, mode, response_tx)
+            };
+            watcher.event_loop_tx.send(request).expect("register watch");
+
+            scan_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("initial scan started");
+            let response_during_scan = response_rx.try_recv();
+            resume_tx.send(()).expect("resume scan");
+            assert!(
+                response_during_scan.is_err(),
+                "watch registration returned before the initial scan completed"
+            );
+            response_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("watch response")
+                .expect("watch registered");
+        }
     }
 
     #[test]
