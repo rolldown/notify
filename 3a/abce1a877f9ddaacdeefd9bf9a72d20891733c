@@ -1,0 +1,19 @@
+notify/src/poll.rs
+  s_bbc5d174787118::t_92d3fdb8e03125 728,733-738,751,754,914-976
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3aabce1a877f9ddaacdeefd9bf9a72d20891733c",
+  "prompts": {},
+  "sessions": {
+    "s_bbc5d174787118": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16791-2ea9-7793-8193-5ee65c6b7529",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
