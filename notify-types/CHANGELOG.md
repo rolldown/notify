@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.4](https://github.com/rolldown/notify/compare/rolldown-notify-types-v2.0.3...rolldown-notify-types-v2.0.4) - 2026-10-23
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [2.0.3](https://github.com/rolldown/notify/compare/rolldown-notify-types-v2.0.2...rolldown-notify-types-v2.0.3) - 2026-09-29
 
 ### Other
