@@ -9,7 +9,6 @@ const watcher = watch(
   ['/project', '/shared/vite.config.js'],
   (event) => console.log(event.kind, event.path),
   {
-    emitInitial: false,
     ignored: ['**/node_modules/**', '**/*.map', '!**/keep.map'],
   },
 )
@@ -26,19 +25,19 @@ The separate `@rolldown/notify/chokidar` entry point adapts the callback API to 
 ```js
 import chokidar from '@rolldown/notify/chokidar'
 
-const watcher = chokidar.watch('/project', { ignoreInitial: true })
+const watcher = chokidar.watch('/project')
 watcher.on('change', (path) => console.log(path))
 await watcher.close()
 ```
 
 Watch paths are treated as literal paths rather than globs.
 
-`unwatch()` can exclude a descendant of a recursively watched root even when that descendant was not added separately. The parent remains watched by the native backend, but the adapter suppresses events below the excluded path and removes those entries from `getWatched()`. Adding the descendant again clears the exclusion. Adding a deeper path also clears the ancestor exclusion for the whole subtree; re-inclusion holes are not represented independently.
+Existing files do not emit initial events, and a directory event does not synthesize events for its descendants. Removed paths whose type is unavailable from the backend emit `unlink`.
 
-## Known bugs with `followSymlinks: false`
+Use `isWatched(path)` to check configured watch coverage. A file root covers that file, and a directory root covers its descendants, including paths that do not exist yet. Ignored or unwatched paths return `false`, as does any query on a closed watcher. The check does not enumerate directories or guarantee OS event delivery. `getWatched()` is not supported.
 
-`followSymlinks: false` uses the default platform backend unless polling is explicitly enabled with `usePolling: true`. WASM always uses polling.
+`unwatch()` can exclude a descendant of a recursively watched root even when that descendant was not added separately. The parent remains watched by the native backend, but the adapter suppresses events below the excluded path. Adding the descendant again clears the exclusion. Adding a deeper path also clears the ancestor exclusion for the whole subtree; re-inclusion holes are not represented independently.
 
-- The scanner still traverses a symlink supplied as a watch root because WalkDir follows root symlinks independently of its `follow_links` setting. Initial events and `getWatched()` can include descendants under the symlink's path. This also affects polling.
-- The macOS FSEvents backend canonicalizes watch roots and does not support the `follow_symlinks` option. A symlink root watches its target, so target changes can emit events under the resolved target path. Removing or replacing the symlink itself may not be detected.
-- Native events are not restricted to the requested roots or checked for symlink ancestors before scanning. Events under a resolved target path or beneath a symlink can therefore add entries and emit events outside the intended no-follow snapshot.
+## `followSymlinks: false`
+
+Symlink behavior follows the backend: the macOS FSEvents backend canonicalizes watch roots and does not support the `follow_symlinks` option. Polling uses WalkDir, which follows a symlink supplied as the root independently of its `follow_links` setting.

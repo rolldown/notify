@@ -1041,7 +1041,6 @@ dependencies = [
  "napi-derive",
  "rolldown-notify",
  "rolldown-notify-debouncer-full",
- "walkdir",
 ]
 
 [[package]]

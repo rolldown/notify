@@ -20,29 +20,47 @@ test('root entry point exposes the callback API', async () => {
   writeFileSync(file, 'export default 1\n')
   const events: WatcherEvent[] = []
   const watcher = watch(file, (event) => events.push(event), {
-    emitInitial: true,
     usePolling: true,
     pollInterval: 25,
   })
   try {
     await immediate()
     expect(watcher).toBeInstanceOf(Watcher)
-    expect(events.some((event) => event.kind === 'add' && event.path === file)).toBeTruthy()
-    expect(watcher.entries().some((entry) => entry.path === file)).toBeTruthy()
+    expect(watcher.isWatched(file)).toBe(true)
+    expect(watcher.isWatched(join(file, 'child.js'))).toBe(false)
+    expect(watcher.isWatched(root)).toBe(false)
+    expect(events).toEqual([])
+    writeFileSync(file, 'export default 2\n')
+    await delay(100)
+    expect(events.some((event) => event.kind === 'change' && event.path === file)).toBeTruthy()
     expect(watcher.remove(file)).toBe(watcher)
+    expect(watcher.isWatched(file)).toBe(false)
     events.length = 0
     writeFileSync(file, 'export default 2\n')
     await delay(100)
     expect(!events.some((event) => event.path === file)).toBeTruthy()
-    expect(watcher.entries()).toEqual([])
   } finally {
     watcher.close()
+    expect(watcher.isWatched(file)).toBe(false)
     rmSync(root, { recursive: true, force: true })
   }
 })
 
 test('Chokidar entry point exports FSWatcher', () => {
   expect(typeof chokidar.FSWatcher).toBe('function')
+})
+
+test('isWatched resolves parent components without following symlinks', () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-coverage-'))
+  const watcher = watch(root, () => {}, { usePolling: true, followSymlinks: false })
+  try {
+    expect(watcher.isWatched(join(root, 'future.js'))).toBe(true)
+    expect(watcher.isWatched(`${root}/../outside`)).toBe(false)
+    expect(watcher.isWatched(`${root}/child/../../outside`)).toBe(false)
+  } finally {
+    watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('native binding supports negated ignored globs', async () => {
@@ -63,11 +81,9 @@ test('native binding supports negated ignored globs', async () => {
     pollInterval: 25,
   })
   try {
-    const initial = watcher.add([root], true)
-    expect(!initial.some((event) => event.path === dropped)).toBeTruthy()
-    expect(initial.some((event) => event.path === kept)).toBeTruthy()
-    expect(!watcher.entries().some((entry) => entry.path === dropped)).toBeTruthy()
-    expect(watcher.entries().some((entry) => entry.path === kept)).toBeTruthy()
+    watcher.add([root])
+    expect(watcher.isWatched(dropped)).toBe(false)
+    expect(watcher.isWatched(kept)).toBe(true)
     await delay(50)
     writeFileSync(dropped, 'changed')
     writeFileSync(kept, 'changed')

@@ -30,15 +30,6 @@ export interface WatcherOptions {
   cwd?: string
 }
 
-export interface AddOptions {
-  emitInitial?: boolean
-}
-
-export interface WatchedEntry {
-  path: string
-  isDir: boolean
-}
-
 type CallbackMatcher = Exclude<WatchMatcher, string>
 
 const toArray = <T>(value: T | ReadonlyArray<T>): T[] =>
@@ -90,24 +81,26 @@ function createIgnored(ignored: Ignored | undefined, options: WatcherOptions) {
 export class Watcher {
   closed = false
   private readonly native: InstanceType<typeof binding.Watcher>
+  private readonly ignored: ((path: string) => boolean) | undefined
 
   constructor(callback: (event: WatcherEvent) => void, options: WatcherOptions = {}) {
     if (typeof callback !== 'function') throw new TypeError('callback must be a function')
     const { ignored, cwd, ...nativeOptions } = options
     const matcher = createIgnored(ignored, { cwd, ...nativeOptions })
+    this.ignored = matcher.predicate
     this.native = new binding.Watcher(
-      (event) => callback(event as WatcherEvent),
+      (event) => {
+        if (!this.closed && (!event.path || !this.isIgnored(event.path))) {
+          callback(event as WatcherEvent)
+        }
+      },
       { ...nativeOptions, ignored: matcher.globs },
-      matcher.predicate,
     )
   }
 
-  add(
-    paths: string | ReadonlyArray<string>,
-    options: AddOptions = {},
-  ): WatcherEvent[] {
-    if (this.closed) return []
-    return this.native.add(toArray(paths), options.emitInitial === true) as WatcherEvent[]
+  add(paths: string | ReadonlyArray<string>): this {
+    if (!this.closed) this.native.add(toArray(paths))
+    return this
   }
 
   remove(paths: string | ReadonlyArray<string>): this {
@@ -115,8 +108,12 @@ export class Watcher {
     return this
   }
 
-  entries(): WatchedEntry[] {
-    return this.closed ? [] : this.native.entries()
+  /** Checks configured watch coverage, including ignores and exclusions. */
+  isWatched(path: string): boolean {
+    return !this.closed && this.native.isWatched(
+      path,
+      this.ignored ? (normalized) => this.isIgnored(normalized) : undefined,
+    )
   }
 
   ref(): this {
@@ -135,26 +132,27 @@ export class Watcher {
       this.native.close()
     }
   }
+
+  private isIgnored(path: string): boolean {
+    if (!this.ignored) return false
+    for (let candidate = path; ; candidate = resolve(candidate, '..')) {
+      if (this.ignored(candidate)) return true
+      if (resolve(candidate, '..') === candidate) return false
+    }
+  }
 }
 
 export function watch(
   paths: string | ReadonlyArray<string>,
   callback: (event: WatcherEvent) => void,
-  options: WatcherOptions & AddOptions = {},
+  options: WatcherOptions = {},
 ): Watcher {
-  const { emitInitial, ...watcherOptions } = options
-  const watcher = new Watcher(callback, watcherOptions)
-  let initial: WatcherEvent[]
+  const watcher = new Watcher(callback, options)
   try {
-    initial = watcher.add(paths, { emitInitial })
+    watcher.add(paths)
   } catch (error) {
     watcher.close()
     throw error
-  }
-  if (initial.length > 0) {
-    queueMicrotask(() => {
-      if (!watcher.closed) initial.forEach(callback)
-    })
   }
   return watcher
 }

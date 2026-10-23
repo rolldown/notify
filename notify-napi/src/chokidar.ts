@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { lstatSync, statSync, type Stats } from 'node:fs'
-import { basename, dirname, relative, resolve, sep } from 'node:path'
+import { relative, resolve, sep } from 'node:path'
 import {
   Watcher,
   type Ignored,
@@ -25,7 +25,6 @@ export interface AwaitWriteFinishOptions {
 
 export interface WatchOptions {
   ignored?: Ignored
-  ignoreInitial?: boolean
   followSymlinks?: boolean
   cwd?: string
   usePolling?: boolean
@@ -71,12 +70,7 @@ export class FSWatcher extends EventEmitter {
 
   add(paths: string | ReadonlyArray<string>): this {
     if (this.closed) return this
-    const initial = this.watcher.add(toArray(paths).map((path) => this.absolute(path)), {
-      emitInitial: this.options.ignoreInitial !== true,
-    })
-    queueMicrotask(() => {
-      if (!this.closed) initial.forEach((event) => this.handle(event))
-    })
+    this.watcher.add(toArray(paths).map((path) => this.absolute(path)))
     return this
   }
 
@@ -87,20 +81,9 @@ export class FSWatcher extends EventEmitter {
     return this
   }
 
-  getWatched(): Record<string, string[]> {
-    const entries = this.watcher.entries().sort((left, right) => left.path.length - right.path.length)
-    const directories = new Set(entries.filter((entry) => entry.isDir).map((entry) => entry.path))
-    const watched: Record<string, string[]> = Object.create(null)
-    for (const entry of entries) {
-      if (entry.isDir) watched[this.display(entry.path)] ??= []
-      const parent = dirname(entry.path)
-      if (directories.has(parent)) {
-        const children = (watched[this.display(parent)] ??= [])
-        const name = basename(entry.path)
-        if (!children.includes(name)) children.push(name)
-      }
-    }
-    return watched
+  /** Checks configured watch coverage; resolves paths against cwd. */
+  isWatched(path: string): boolean {
+    return !this.closed && this.watcher.isWatched(this.absolute(path))
   }
 
   ref(): this {

@@ -12,20 +12,21 @@ import {
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 import { expect, test } from 'vitest'
 import { FSWatcher, watch, type WatchEventName } from '@rolldown/notify/chokidar'
 
 function waitForEvent(
   watcher: FSWatcher,
-  eventName: WatchEventName,
+  eventNames: WatchEventName | WatchEventName[],
   predicate: (path: string) => boolean,
   timeout = 2000,
 ): Promise<void> {
+  const names = Array.isArray(eventNames) ? eventNames : [eventNames]
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup()
-      reject(new Error(`timed out waiting for ${eventName}`))
+      reject(new Error(`timed out waiting for ${names.join(' or ')}`))
     }, timeout)
     const onEvent = (path: string) => {
       if (!predicate(path)) return
@@ -38,10 +39,10 @@ function waitForEvent(
     }
     const cleanup = () => {
       clearTimeout(timer)
-      watcher.off(eventName, onEvent)
+      for (const name of names) watcher.off(name, onEvent)
       watcher.off('error', onError)
     }
-    watcher.on(eventName, onEvent)
+    for (const name of names) watcher.on(name, onEvent)
     watcher.on('error', onError)
   })
 }
@@ -59,16 +60,16 @@ test('watcher handles lifecycle and file events', async () => {
   writeFileSync(ignored, "export default 'ignored'\n")
 
   const watcher = watch(root, {
-    ignoreInitial: true,
     ignored: ['**/node_modules/**'],
+    usePolling: true,
+    interval: 25,
   })
   try {
     await once(watcher, 'ready')
-    const watched = watcher.getWatched()
-    expect(root in watched).toBeTruthy()
-    expect(sourceDirectory in watched).toBeTruthy()
-    expect(!(join(root, 'node_modules') in watched)).toBeTruthy()
-
+    expect(watcher.isWatched(root)).toBe(true)
+    expect(watcher.isWatched(entry)).toBe(true)
+    expect(watcher.isWatched(added)).toBe(true)
+    expect(watcher.isWatched(ignored)).toBe(false)
     const firstWrite = waitForEvent(
       watcher,
       'change',
@@ -106,6 +107,7 @@ test('watcher handles lifecycle and file events', async () => {
     rmSync(root, { recursive: true, force: true })
   }
   expect(watcher.closed).toBe(true)
+  expect(watcher.isWatched(entry)).toBe(false)
 })
 
 test('watcher forwards polling options', async () => {
@@ -113,7 +115,6 @@ test('watcher forwards polling options', async () => {
   const file = join(root, 'entry.js')
   writeFileSync(file, "export default 'before'\n")
   const watcher = watch(file, {
-    ignoreInitial: true,
     usePolling: true,
     interval: 25,
   })
@@ -132,7 +133,7 @@ test('polling reports changes using the default interval', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-poll-default-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, "export default 'before'\n")
-  const watcher = watch(file, { ignoreInitial: true, usePolling: true })
+  const watcher = watch(file, { usePolling: true })
   try {
     await once(watcher, 'ready')
     const changed = waitForEvent(watcher, 'change', (path) => path === file, 1500)
@@ -149,7 +150,7 @@ test('renames emit unlink and add events', async () => {
   const before = join(root, 'before.js')
   const after = join(root, 'after.js')
   writeFileSync(before, 'export default 1\n')
-  const watcher = watch(root, { ignoreInitial: true })
+  const watcher = watch(root, { usePolling: true, interval: 25 })
   try {
     await once(watcher, 'ready')
     const removed = waitForEvent(watcher, 'unlink', (path) => path === before)
@@ -162,24 +163,27 @@ test('renames emit unlink and add events', async () => {
   }
 })
 
-test('watcher emits initial events after listeners attach', async () => {
+test('watching existing files emits no initial events', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-initial-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
-  const watcher = watch(root, { ignoreInitial: false })
+  const watcher = watch(root, { usePolling: true, interval: 25 })
   const events: [WatchEventName, string][] = []
   watcher.on('all', (event, path) => events.push([event, path]))
   try {
     await once(watcher, 'ready')
-    expect(events.some(([event, path]) => event === 'addDir' && path === root)).toBeTruthy()
-    expect(events.some(([event, path]) => event === 'add' && path === file)).toBeTruthy()
+    expect(events).toEqual([])
+    expect(watcher.isWatched(file)).toBe(true)
+    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    writeFileSync(file, 'export default 2\n')
+    await changed
   } finally {
     await watcher.close()
     rmSync(root, { recursive: true, force: true })
   }
 })
 
-test('ignoreInitial applies to paths added after ready', async () => {
+test('adding paths after ready registers them without initial events', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-late-add-'))
   const first = join(root, 'first')
   const second = join(root, 'second')
@@ -187,7 +191,7 @@ test('ignoreInitial applies to paths added after ready', async () => {
   mkdirSync(first)
   mkdirSync(second)
   writeFileSync(file, 'export default 1\n')
-  const watcher = watch(first, { ignoreInitial: true, usePolling: true, interval: 25 })
+  const watcher = watch(first, { usePolling: true, interval: 25 })
   const added: string[] = []
   watcher.on('add', (path) => added.push(path))
   try {
@@ -201,25 +205,32 @@ test('ignoreInitial applies to paths added after ready', async () => {
   }
 })
 
-test('direct FSWatcher chaining emits initial events and unwatch is synchronous', async () => {
+test('direct FSWatcher chaining registers paths and unwatch is synchronous', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-direct-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
-  const watcher = new FSWatcher().add(root)
+  const watcher = new FSWatcher().add(file)
   const events: [WatchEventName, string][] = []
   watcher.on('all', (event, path) => events.push([event, path]))
   try {
     await once(watcher, 'ready')
-    expect(events.some(([event, path]) => event === 'add' && path === file)).toBeTruthy()
+    expect(events).toEqual([])
+    expect(watcher.isWatched(file)).toBe(true)
+    expect(watcher.isWatched(join(file, 'child.js'))).toBe(false)
   } finally {
     await watcher.close()
   }
 
   const unwatched = watch(root)
+  const unwatchedEvents: string[] = []
+  unwatched.on('all', (_event, path) => unwatchedEvents.push(path))
   unwatched.unwatch(root)
   try {
     await once(unwatched, 'ready')
-    expect(Object.keys(unwatched.getWatched())).toEqual([])
+    expect(unwatched.isWatched(file)).toBe(false)
+    writeFileSync(file, 'export default 2\n')
+    await delay(100)
+    expect(unwatchedEvents).toEqual([])
   } finally {
     await unwatched.close()
     rmSync(root, { recursive: true, force: true })
@@ -241,7 +252,6 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
   let receivedDirectoryStats = false
   const watcher = watch('.', {
     cwd: root,
-    ignoreInitial: false,
     ignored: [
       'ignored/**',
       /regexp-ignored/,
@@ -260,9 +270,20 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
   watcher.on('all', (_event, path) => paths.push(path))
   try {
     await once(watcher, 'ready')
+    expect(watcher.isWatched('.')).toBe(true)
+    expect(watcher.isWatched('visible.js')).toBe(true)
+    expect(watcher.isWatched('ignored/relative.js')).toBe(false)
+    expect(watcher.isWatched('function-ignored/function.js')).toBe(false)
+    expect(watcher.isWatched('regexp-ignored/regexp.js')).toBe(false)
+    const visible = waitForEvent(watcher, 'add', (path) => path === 'visible.js')
+    writeFileSync(join(ignoredDirectory, 'relative.js'), 'changed')
+    writeFileSync(join(functionDirectory, 'function.js'), 'changed')
+    writeFileSync(join(regexpDirectory, 'regexp.js'), 'changed')
+    writeFileSync(join(root, 'visible.js'), 'visible')
+    await visible
+    await delay(100)
     expect(receivedPathOnly).toBe(true)
     expect(receivedDirectoryStats).toBe(true)
-    expect('.' in watcher.getWatched()).toBeTruthy()
     expect(!paths.some((path) => path.startsWith('ignored'))).toBeTruthy()
     expect(!paths.some((path) => path.startsWith('function-ignored'))).toBeTruthy()
     expect(!paths.some((path) => path.startsWith('regexp-ignored'))).toBeTruthy()
@@ -272,7 +293,7 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
   }
 })
 
-test('function ignores prune descendants created after ready', async () => {
+test('function ignores filter descendants created after ready', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-runtime-ignore-'))
   const ignoredDirectory = join(root, 'ignored')
   const ignoredFile = join(ignoredDirectory, 'entry.js')
@@ -280,7 +301,6 @@ test('function ignores prune descendants created after ready', async () => {
   mkdirSync(ignoredDirectory)
   let checkedIgnoredDirectory = false
   const watcher = watch(root, {
-    ignoreInitial: true,
     ignored(path, stats) {
       if (path === ignoredDirectory && stats?.isDirectory()) {
         checkedIgnoredDirectory = true
@@ -301,7 +321,6 @@ test('function ignores prune descendants created after ready', async () => {
     await delay(100)
     expect(checkedIgnoredDirectory).toBe(true)
     expect(!events.includes(ignoredFile)).toBeTruthy()
-    expect(!watcher.getWatched()[ignoredDirectory]).toBeTruthy()
   } finally {
     await watcher.close()
     rmSync(root, { recursive: true, force: true })
@@ -318,13 +337,17 @@ test('negated globs re-include nested subtrees', async () => {
   writeFileSync(dropped, '')
   const watcher = watch('.', {
     cwd: root,
-    ignoreInitial: false,
     ignored: ['ignored/**', '!ignored/keep/**'],
   })
   const paths: string[] = []
   watcher.on('all', (_event, path) => paths.push(path))
   try {
     await once(watcher, 'ready')
+    const changed = waitForEvent(watcher, ['add', 'change'], (path) => path === 'ignored/keep/kept.js')
+    writeFileSync(kept, 'kept change')
+    writeFileSync(dropped, 'dropped change')
+    await changed
+    await delay(100)
     expect(paths.includes('ignored/keep/kept.js')).toBeTruthy()
     expect(!paths.includes('ignored/drop/dropped.js')).toBeTruthy()
   } finally {
@@ -333,7 +356,45 @@ test('negated globs re-include nested subtrees', async () => {
   }
 })
 
-test('symlinked roots share the canonical watched snapshot', async () => {
+// WalkDir cannot follow nested symlinks on WASI because same-file is unsupported.
+test.skipIf(process.env.NAPI_RS_FORCE_WASI === 'error')('followed symlinks inside a root are covered by their alias', async () => {
+  const directory = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-link-coverage-'))
+  const root = join(directory, 'watched')
+  const target = join(directory, 'target')
+  const link = join(root, 'link')
+  const internal = join(root, 'internal')
+  const internalLink = join(root, 'internal-link')
+  const file = join(link, 'entry.js')
+  mkdirSync(root)
+  mkdirSync(target)
+  mkdirSync(internal)
+  writeFileSync(join(target, 'entry.js'), 'before')
+  writeFileSync(join(internal, 'entry.js'), 'internal')
+  symlinkSync(target, link)
+  symlinkSync(internal, internalLink)
+  const watcher = watch(root, {
+    usePolling: true,
+    interval: 25,
+    ignored: ['**/internal-link/**'],
+  })
+  try {
+    await once(watcher, 'ready')
+    expect(watcher.isWatched(file)).toBe(true)
+    expect(watcher.isWatched(join(link, 'future.js'))).toBe(true)
+    expect(watcher.isWatched(join(target, 'entry.js'))).toBe(false)
+    expect(watcher.isWatched(`${root}/../target/entry.js`)).toBe(false)
+    expect(watcher.isWatched(join(internalLink, 'entry.js'))).toBe(false)
+    expect(watcher.isWatched(join(internal, 'entry.js'))).toBe(true)
+    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    writeFileSync(file, 'after')
+    await changed
+  } finally {
+    await watcher.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('symlinked roots use canonical backend paths', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-symlink-'))
   const target = join(root, 'target')
   const link = join(root, 'link')
@@ -341,12 +402,13 @@ test('symlinked roots share the canonical watched snapshot', async () => {
   mkdirSync(target)
   writeFileSync(file, "export default 'before'\n")
   symlinkSync(target, link)
-  const watcher = watch(link, { ignoreInitial: true })
+  const watcher = watch(link)
   try {
     await once(watcher, 'ready')
-    expect(target in watcher.getWatched()).toBeTruthy()
-    expect(!(link in watcher.getWatched())).toBeTruthy()
-    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    expect(watcher.isWatched(link)).toBe(true)
+    expect(watcher.isWatched(target)).toBe(true)
+    expect(watcher.isWatched(file)).toBe(true)
+    const changed = waitForEvent(watcher, ['add', 'change'], (path) => path === file)
     writeFileSync(file, "export default 'after'\n")
     await changed
   } finally {
@@ -356,6 +418,27 @@ test('symlinked roots share the canonical watched snapshot', async () => {
 })
 
 // FSEvents follows symlinked watch roots.
+test.skipIf(process.platform !== 'darwin' || process.env.NAPI_RS_FORCE_WASI === 'error')('FSEvents reports canonical paths when followSymlinks is false', async () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-fsevents-paths-'))
+  const target = join(root, 'target')
+  const link = join(root, 'link')
+  const file = join(target, 'entry.js')
+  mkdirSync(target)
+  writeFileSync(file, 'before')
+  symlinkSync(target, link)
+  const watcher = watch(link, { followSymlinks: false })
+  try {
+    await once(watcher, 'ready')
+    expect(watcher.isWatched(file)).toBe(true)
+    const changed = waitForEvent(watcher, ['add', 'change'], (path) => path === file)
+    writeFileSync(file, 'after')
+    await changed
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test.skipIf(process.platform === 'darwin')('followSymlinks false does not traverse a symlinked directory', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-no-follow-'))
   const target = join(root, 'target')
@@ -366,13 +449,12 @@ test.skipIf(process.platform === 'darwin')('followSymlinks false does not traver
   symlinkSync(target, link)
   const watcher = watch(link, {
     followSymlinks: false,
-    ignoreInitial: false,
   })
   const events: [WatchEventName, string][] = []
   watcher.on('all', (event, path) => events.push([event, path]))
   try {
     await once(watcher, 'ready')
-    expect(events.some(([event, path]) => event === 'add' && path === link)).toBeTruthy()
+    expect(events).toEqual([])
     expect(!events.some(([, path]) => path === file)).toBeTruthy()
     writeFileSync(file, "export default 'after'\n")
     await delay(150)
@@ -389,20 +471,22 @@ test('an implicitly watched child can be unwatched and re-added', async () => {
   const file = join(child, 'entry.js')
   mkdirSync(child)
   writeFileSync(file, "export default 'before'\n")
-  const watcher = watch(root, { ignoreInitial: false, usePolling: true, interval: 25 })
+  const watcher = watch(root, { usePolling: true, interval: 25 })
   const events: [WatchEventName, string][] = []
   watcher.on('all', (event, path) => events.push([event, path]))
   try {
     await once(watcher, 'ready')
     watcher.unwatch(child)
-    expect(!(child in watcher.getWatched())).toBeTruthy()
-    events.length = 0
+    expect(watcher.isWatched(file)).toBe(false)
+    writeFileSync(file, 'export default 1\n')
+    await delay(100)
+    expect(events).toEqual([])
     watcher.add(child)
-    expect(child in watcher.getWatched()).toBeTruthy()
-    expect(watcher.getWatched()[child].includes('entry.js')).toBeTruthy()
-    await immediate()
-    expect(events.some(([event, path]) => event === 'addDir' && path === child)).toBeTruthy()
-    expect(events.some(([event, path]) => event === 'add' && path === file)).toBeTruthy()
+    expect(watcher.isWatched(file)).toBe(true)
+    expect(events).toEqual([])
+    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    writeFileSync(file, 'export default 2\n')
+    await changed
   } finally {
     await watcher.close()
     rmSync(root, { recursive: true, force: true })
