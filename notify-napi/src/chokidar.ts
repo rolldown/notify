@@ -178,4 +178,6 @@ export function watch(
   }
 }
 
-export default { FSWatcher, watch }
+const chokidar: { FSWatcher: typeof FSWatcher; watch: typeof watch } = { FSWatcher, watch }
+
+export default chokidar
