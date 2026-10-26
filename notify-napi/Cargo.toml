@@ -1,0 +1,23 @@
+[package]
+name = "rolldown-notify-napi"
+version = "0.0.0"
+description = "Node.js bindings for rolldown-notify"
+license = "MIT OR Apache-2.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rolldown_notify"
+crate-type = ["cdylib"]
+
+[dependencies]
+globset = "0.4.16"
+napi = { version = "3.14.2", default-features = false, features = ["dyn-symbols", "napi8"] }
+napi-derive = "3.6.12"
+rolldown-notify.workspace = true
+rolldown-notify-debouncer-full.workspace = true
+
+[build-dependencies]
+napi-build = "2.6.0"
+
