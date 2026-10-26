@@ -1,0 +1,25 @@
+notify-napi/src/chokidar.ts
+  s_eeb95c8802b66e::t_fb7c648f0efa88 181-183
+notify-napi/package.json
+  s_eeb95c8802b66e::t_e43185b8760a07 22
+notify-napi/tsconfig.config.json
+  s_eeb95c8802b66e::t_dbcc218cc3dc69 1-8
+notify-napi/tsconfig.json
+  s_eeb95c8802b66e::t_fa9594d3284caf 7-8,13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3a409f5e1edcaa2a6959ce233f7a0c43c91b669d",
+  "prompts": {},
+  "sessions": {
+    "s_eeb95c8802b66e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1765f-d0e2-7170-b27e-652a222298a2",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
