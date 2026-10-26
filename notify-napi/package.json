@@ -19,7 +19,7 @@
     "build:wasi": "pnpm run build:native --target wasm32-wasip1-threads",
     "test": "pnpm run build && vitest run",
     "test:wasi": "pnpm run build:wasi && pnpm run build:js && vitest run --mode wasi",
-    "typecheck": "tsc"
+    "typecheck": "tsc && tsc -p tsconfig.config.json"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.10.9",
