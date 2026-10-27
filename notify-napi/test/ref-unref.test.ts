@@ -5,24 +5,25 @@ import { join } from 'node:path'
 import { expect, test } from 'vitest'
 
 function runWatcherScript(entry: 'index' | 'chokidar', ignored: boolean, body: string) {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-ref-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-ref-'))
   try {
     writeFileSync(join(root, 'entry.js'), 'before')
     const script = `
       import assert from 'node:assert/strict'
-      import { writeFileSync } from 'node:fs'
+      import { realpathSync, writeFileSync } from 'node:fs'
       import { join } from 'node:path'
       import { watch } from ${JSON.stringify(new URL(`../dist/${entry}.mjs`, import.meta.url).href)}
 
-      const file = join(process.cwd(), 'entry.js')
+      const root = realpathSync.native(process.cwd())
+      const file = join(root, 'entry.js')
       const options = {
         usePolling: true,
         ${entry === 'index' ? 'pollInterval' : 'interval'}: 20,
         ignored: ${ignored ? '() => false' : 'undefined'},
       }
       const watcher = ${entry === 'index'
-        ? "watch(process.cwd(), (event) => { if (event.kind === 'change' && event.path === file) onChange() }, options)"
-        : "watch(process.cwd(), options).on('change', (path) => { if (path === file) onChange() })"}
+        ? "watch(root, (event) => { if (event.kind === 'change' && event.path === file) onChange() }, options)"
+        : "watch(root, options).on('change', (path) => { if (path === file) onChange() })"}
       ${body}
     `
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {

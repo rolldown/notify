@@ -48,7 +48,7 @@ function waitForEvent(
 }
 
 test('watcher handles lifecycle and file events', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-vite-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-vite-'))
   const sourceDirectory = join(root, 'src')
   const dependencyDirectory = join(root, 'node_modules', 'dependency')
   const entry = join(sourceDirectory, 'entry.js')
@@ -111,7 +111,7 @@ test('watcher handles lifecycle and file events', async () => {
 })
 
 test('watcher forwards polling options', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-poll-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-poll-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, "export default 'before'\n")
   const watcher = watch(file, {
@@ -130,7 +130,7 @@ test('watcher forwards polling options', async () => {
 })
 
 test('polling reports changes using the default interval', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-poll-default-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-poll-default-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, "export default 'before'\n")
   const watcher = watch(file, { usePolling: true })
@@ -146,7 +146,7 @@ test('polling reports changes using the default interval', async () => {
 })
 
 test('renames emit unlink and add events', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-rename-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-rename-'))
   const before = join(root, 'before.js')
   const after = join(root, 'after.js')
   writeFileSync(before, 'export default 1\n')
@@ -164,7 +164,7 @@ test('renames emit unlink and add events', async () => {
 })
 
 test('watching existing files emits no initial events', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-initial-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-initial-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
   const watcher = watch(root, { usePolling: true, interval: 25 })
@@ -184,7 +184,7 @@ test('watching existing files emits no initial events', async () => {
 })
 
 test('adding paths after ready registers them without initial events', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-late-add-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-late-add-'))
   const first = join(root, 'first')
   const second = join(root, 'second')
   const file = join(second, 'entry.js')
@@ -206,7 +206,7 @@ test('adding paths after ready registers them without initial events', async () 
 })
 
 test('direct FSWatcher chaining registers paths and unwatch is synchronous', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-direct-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-direct-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
   const watcher = new FSWatcher().add(file)
@@ -238,7 +238,7 @@ test('direct FSWatcher chaining registers paths and unwatch is synchronous', asy
 })
 
 test('ignored matchers receive stats and honor cwd-relative globs', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-ignored-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-ignored-'))
   const ignoredDirectory = join(root, 'ignored')
   const functionDirectory = join(root, 'function-ignored')
   const functionPath = functionDirectory.replaceAll(sep, '/')
@@ -295,7 +295,7 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
 })
 
 test('function ignores filter descendants created after ready', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-runtime-ignore-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-runtime-ignore-'))
   const ignoredDirectory = join(root, 'ignored')
   const ignoredPath = ignoredDirectory.replaceAll(sep, '/')
   const ignoredFile = join(ignoredDirectory, 'entry.js')
@@ -330,7 +330,7 @@ test('function ignores filter descendants created after ready', async () => {
 })
 
 test('negated globs re-include nested subtrees', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-negated-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-negated-'))
   const kept = join(root, 'ignored', 'keep', 'kept.js')
   const dropped = join(root, 'ignored', 'drop', 'dropped.js')
   mkdirSync(join(root, 'ignored', 'keep'), { recursive: true })
@@ -360,7 +360,7 @@ test('negated globs re-include nested subtrees', async () => {
 
 // WalkDir cannot follow nested symlinks on WASI because same-file is unsupported.
 test.skipIf(process.env.NAPI_RS_FORCE_WASI === 'error')('followed symlinks inside a root are covered by their alias', async () => {
-  const directory = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-link-coverage-'))
+  const directory = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-link-coverage-'))
   const root = join(directory, 'watched')
   const target = join(directory, 'target')
   const link = join(root, 'link')
@@ -397,7 +397,7 @@ test.skipIf(process.env.NAPI_RS_FORCE_WASI === 'error')('followed symlinks insid
 })
 
 test('symlinked roots use canonical backend paths', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-symlink-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-symlink-'))
   const target = join(root, 'target')
   const link = join(root, 'link')
   const file = join(target, 'entry.js')
@@ -421,7 +421,7 @@ test('symlinked roots use canonical backend paths', async () => {
 
 // FSEvents follows symlinked watch roots.
 test.skipIf(process.platform !== 'darwin' || process.env.NAPI_RS_FORCE_WASI === 'error')('FSEvents reports canonical paths when followSymlinks is false', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-fsevents-paths-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-fsevents-paths-'))
   const target = join(root, 'target')
   const link = join(root, 'link')
   const file = join(target, 'entry.js')
@@ -442,7 +442,7 @@ test.skipIf(process.platform !== 'darwin' || process.env.NAPI_RS_FORCE_WASI === 
 })
 
 test.skipIf(process.platform === 'darwin')('followSymlinks false does not traverse a symlinked directory', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-no-follow-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-no-follow-'))
   const target = join(root, 'target')
   const link = join(root, 'link')
   const file = join(target, 'entry.js')
@@ -468,7 +468,7 @@ test.skipIf(process.platform === 'darwin')('followSymlinks false does not traver
 })
 
 test('an implicitly watched child can be unwatched and re-added', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-rewatch-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-rewatch-'))
   const child = join(root, 'child')
   const file = join(child, 'entry.js')
   mkdirSync(child)
@@ -496,7 +496,7 @@ test('an implicitly watched child can be unwatched and re-added', async () => {
 })
 
 test('persistent false allows the process to exit', () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-exit-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-exit-'))
   try {
     for (const expression of [
       "watch('.', { persistent: false })",

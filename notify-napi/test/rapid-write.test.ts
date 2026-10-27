@@ -6,7 +6,7 @@ import { test } from 'vitest'
 import { Watcher } from '@rolldown/notify'
 
 test('watcher reports the final state of rapid writes', async () => {
-  const directory = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-napi-'))
+  const directory = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-napi-'))
   const file = join(directory, 'entry.js')
   writeFileSync(file, "export default 'initial'\n")
 
