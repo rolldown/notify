@@ -1,7 +1,19 @@
 {
   "name": "@rolldown/notify",
   "version": "0.0.0",
-  "private": true,
+  "description": "Native file watching for Node.js, powered by rolldown-notify",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rolldown/notify.git",
+    "directory": "notify-napi"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "packageManager": "pnpm@12.14.0",
   "module": "dist/index.mjs",
   "types": "dist/index.d.mts",
@@ -35,6 +47,20 @@
     "@napi-rs/wasm-runtime": "~1.2.5"
   },
   "napi": {
-    "binaryName": "rolldown_notify"
+    "binaryName": "rolldown_notify",
+    "targets": [
+      "aarch64-apple-darwin",
+      "aarch64-pc-windows-msvc",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl",
+      "wasm32-wasip1-threads",
+      "x86_64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl"
+    ],
+    "wasm": {
+      "optionalDependency": true
+    }
   }
 }
