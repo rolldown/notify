@@ -1,0 +1,25 @@
+notify-napi/test/chokidar.test.ts
+  s_23f4dcb05a2e70::t_138c4e2714e908 51,114,133,149,167,187,209,241,298,333,363,400,424,445,471,499
+notify-napi/test/rapid-write.test.ts
+  s_23f4dcb05a2e70::t_fd0782d4571d1b 9
+notify-napi/test/callback-api.test.ts
+  s_23f4dcb05a2e70::t_263bee47315932 1,18,21,35-39,43-44,59,72
+notify-napi/test/ref-unref.test.ts
+  s_23f4dcb05a2e70::t_e503a160b27adb 8,13,17-18,25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "daf38e92e4efd5fc90a890e8dda55800414c9448",
+  "prompts": {},
+  "sessions": {
+    "s_23f4dcb05a2e70": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17c2f-5e1e-7442-a9d3-a2b35a401762",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
