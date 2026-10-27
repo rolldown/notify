@@ -1,6 +1,6 @@
 {
   "name": "@rolldown/notify",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Native file watching for Node.js, powered by rolldown-notify",
   "repository": {
     "type": "git",
