@@ -154,13 +154,17 @@ jobs:
           WASMTIME_BACKTRACE_DETAILS: 1
 
   napi:
-    name: Node-API (${{ matrix.runtime }})
-    runs-on: ubuntu-latest
+    name: Node-API (${{ matrix.os }}, ${{ matrix.runtime }})
+    runs-on: ${{ matrix.os }}
     needs: quality
     strategy:
       fail-fast: false
       matrix:
-        runtime: [native, wasi]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        runtime: [native]
+        include:
+          - os: ubuntu-latest
+            runtime: wasi
     defaults:
       run:
         working-directory: notify-napi
@@ -170,7 +174,7 @@ jobs:
       - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
         with:
           save-cache: ${{ github.ref_name == 'main' }}
-          cache-key: napi-${{ matrix.runtime }}
+          cache-key: napi-${{ matrix.os }}-${{ matrix.runtime }}
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:

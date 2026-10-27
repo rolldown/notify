@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { expect, test } from 'vitest'
 import { FSWatcher, watch, type WatchEventName } from '@rolldown/notify/chokidar'
@@ -241,6 +241,7 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-ignored-'))
   const ignoredDirectory = join(root, 'ignored')
   const functionDirectory = join(root, 'function-ignored')
+  const functionPath = functionDirectory.replaceAll(sep, '/')
   const regexpDirectory = join(root, 'regexp-ignored')
   mkdirSync(ignoredDirectory)
   mkdirSync(functionDirectory)
@@ -256,9 +257,9 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
       'ignored/**',
       /regexp-ignored/,
       (path, stats) => {
-        if (path === functionDirectory && stats === undefined) {
+        if (path === functionPath && stats === undefined) {
           receivedPathOnly = true
-        } else if (path === functionDirectory && stats?.isDirectory()) {
+        } else if (path === functionPath && stats?.isDirectory()) {
           receivedDirectoryStats = true
           return true
         }
@@ -296,13 +297,14 @@ test('ignored matchers receive stats and honor cwd-relative globs', async () => 
 test('function ignores filter descendants created after ready', async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-runtime-ignore-'))
   const ignoredDirectory = join(root, 'ignored')
+  const ignoredPath = ignoredDirectory.replaceAll(sep, '/')
   const ignoredFile = join(ignoredDirectory, 'entry.js')
   const visibleFile = join(root, 'visible.js')
   mkdirSync(ignoredDirectory)
   let checkedIgnoredDirectory = false
   const watcher = watch(root, {
     ignored(path, stats) {
-      if (path === ignoredDirectory && stats?.isDirectory()) {
+      if (path === ignoredPath && stats?.isDirectory()) {
         checkedIgnoredDirectory = true
         return true
       }
