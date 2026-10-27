@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,9 +15,10 @@ beforeAll(() => {
 })
 
 test('root entry point exposes the callback API', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-callback-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-callback-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
+  const mtime = statSync(file).mtimeMs / 1000
   const events: WatcherEvent[] = []
   const watcher = watch(file, (event) => events.push(event), {
     usePolling: true,
@@ -31,12 +32,16 @@ test('root entry point exposes the callback API', async () => {
     expect(watcher.isWatched(root)).toBe(false)
     expect(events).toEqual([])
     writeFileSync(file, 'export default 2\n')
-    await delay(100)
-    expect(events.some((event) => event.kind === 'change' && event.path === file)).toBeTruthy()
+    // Polling needs a distinct mtime even on filesystems with coarse timestamps.
+    utimesSync(file, mtime + 1, mtime + 1)
+    await expect.poll(() => events, { timeout: 2000 }).toContainEqual(
+      expect.objectContaining({ kind: 'change', path: file }),
+    )
     expect(watcher.remove(file)).toBe(watcher)
     expect(watcher.isWatched(file)).toBe(false)
     events.length = 0
-    writeFileSync(file, 'export default 2\n')
+    writeFileSync(file, 'export default 3\n')
+    utimesSync(file, mtime + 2, mtime + 2)
     await delay(100)
     expect(!events.some((event) => event.path === file)).toBeTruthy()
   } finally {
@@ -51,7 +56,7 @@ test('Chokidar entry point exports FSWatcher', () => {
 })
 
 test('isWatched resolves parent components without following symlinks', () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-coverage-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-coverage-'))
   const watcher = watch(root, () => {}, { usePolling: true, followSymlinks: false })
   try {
     expect(watcher.isWatched(join(root, 'future.js'))).toBe(true)
@@ -64,7 +69,7 @@ test('isWatched resolves parent components without following symlinks', () => {
 })
 
 test('native binding supports negated ignored globs', async () => {
-  const root = mkdtempSync(join(realpathSync(tmpdir()), 'rolldown-notify-negated-glob-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-negated-glob-'))
   const ignored = join(root, 'ignored')
   const keptDirectory = join(ignored, 'keep')
   const droppedDirectory = join(ignored, 'drop')

@@ -441,7 +441,7 @@ fn translate_event(event: &Event) -> Vec<WatcherEvent> {
 }
 
 fn canonicalize_path(path: &Path) -> PathBuf {
-    if let Ok(path) = path.canonicalize() {
+    if let Ok(path) = dunce::canonicalize(path) {
         return path;
     }
     let mut current = path;
@@ -450,7 +450,7 @@ fn canonicalize_path(path: &Path) -> PathBuf {
         if let Some(name) = current.file_name() {
             suffix.push(name.to_os_string());
         }
-        if let Ok(mut canonical) = parent.canonicalize() {
+        if let Ok(mut canonical) = dunce::canonicalize(parent) {
             for name in suffix.iter().rev() {
                 canonical.push(name);
             }
