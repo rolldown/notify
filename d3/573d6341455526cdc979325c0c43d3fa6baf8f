@@ -1,0 +1,27 @@
+.github/workflows/ci.yml
+  s_23f4dcb05a2e70::t_d0efb5088acce1 157-158,163-167,177
+Cargo.lock
+  s_23f4dcb05a2e70::t_bedc19236d4d69 279-284,1044
+notify-napi/Cargo.toml
+  s_23f4dcb05a2e70::t_dd5528e6093da7 15
+notify-napi/src/watcher.rs
+  s_23f4dcb05a2e70::t_c00f76b03cad2f 444,453
+notify-napi/test/chokidar.test.ts
+  s_23f4dcb05a2e70::t_16971fe0c4676b 14,244,260,262,300,307
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d3573d6341455526cdc979325c0c43d3fa6baf8f",
+  "prompts": {},
+  "sessions": {
+    "s_23f4dcb05a2e70": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17c2f-5e1e-7442-a9d3-a2b35a401762",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
