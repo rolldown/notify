@@ -1,0 +1,19 @@
+.github/workflows/release-npm.yml
+  s_58c27396aa5f6a::t_63fb16883feec1 1-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d082b8b2372ff34a61be623dcf1f4a6fd3290324",
+  "prompts": {},
+  "sessions": {
+    "s_58c27396aa5f6a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a175f7-746c-7503-ac5f-892fe9ce8cda",
+        "model": "unknown"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
