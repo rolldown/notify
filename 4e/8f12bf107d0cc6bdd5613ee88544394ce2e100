@@ -1,0 +1,33 @@
+notify-napi/tsdown.config.mts
+  s_a1fe7583094f95::t_46b8558617aa86 4-9
+notify-napi/src/chokidar-factory.ts
+  s_91c4d3aab072ba::t_4401cd6847fb4e 1-200
+notify-napi/src/chokidar.ts
+  s_91c4d3aab072ba::t_4b9e422250bb5d 1,3-19
+notify-napi/src/index.ts
+  s_91c4d3aab072ba::t_790ac4ea05b53b 2-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4e8f12bf107d0cc6bdd5613ee88544394ce2e100",
+  "prompts": {},
+  "sessions": {
+    "s_91c4d3aab072ba": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18030-3d32-79c3-b854-a1b92eaa34c6",
+        "model": "unknown"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    },
+    "s_a1fe7583094f95": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17bb6-f630-7011-8015-dfcde7bc0223",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
