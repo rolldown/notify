@@ -1,0 +1,29 @@
+notify-napi/src/lib.rs
+  s_e40404063abe2d::t_eb9b5d1931c18a 51-52,65
+notify-napi/src/watcher.rs
+  s_5134e575f61c4e::t_6b30b62e172a0d 104-107,286-295,299-308
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7df163b628b92c4d9fd40de05126b901d2dc8917",
+  "prompts": {},
+  "sessions": {
+    "s_5134e575f61c4e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1801f-4714-7760-86c5-5ed9739cc4e5",
+        "model": "unknown"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    },
+    "s_e40404063abe2d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1801e-102a-7c81-a3a7-49313a1410bc",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
