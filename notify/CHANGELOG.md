@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.0.1](https://github.com/rolldown/notify/compare/rolldown-notify-v11.0.0...rolldown-notify-v11.0.1) - 2026-10-28
+
+### Fixed
+
+- *(poll)* wait for initial scan before acknowledging watches ([#133](https://github.com/rolldown/notify/pull/133))
+
 ## [11.0.0](https://github.com/rolldown/notify/compare/rolldown-notify-v10.5.1...rolldown-notify-v11.0.0) - 2026-09-29
 
 ### Added
