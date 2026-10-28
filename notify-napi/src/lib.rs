@@ -48,8 +48,8 @@ fn ignored_globs(patterns: &[String]) -> Result<IgnoredGlobs> {
         }
     }
     Ok(IgnoredGlobs {
-        included: build_globs(included)?,
-        excluded: build_globs(excluded)?,
+        included: build_globs(&included)?,
+        excluded: build_globs(&excluded)?,
     })
 }
 
@@ -62,7 +62,7 @@ fn add_glob(builder: &mut GlobSetBuilder, pattern: &str) -> Result<()> {
     Ok(())
 }
 
-fn build_globs(builder: GlobSetBuilder) -> Result<GlobSet> {
+fn build_globs(builder: &GlobSetBuilder) -> Result<GlobSet> {
     builder
         .build()
         .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))

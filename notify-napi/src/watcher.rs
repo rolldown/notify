@@ -101,6 +101,10 @@ pub struct Watcher {
 }
 
 #[napi]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "napi requires owned strings for JavaScript arguments"
+)]
 impl Watcher {
     #[napi(constructor)]
     pub fn new(
@@ -279,25 +283,29 @@ impl Watcher {
     }
 
     #[napi(js_name = "ref")]
-    #[allow(deprecated)]
-    pub fn refer(&self, env: &Env) -> Result<()> {
-        self.callback
-            .lock()
-            .map_err(|_| Error::new(Status::GenericFailure, "callback lock poisoned"))?
-            .as_mut()
-            .ok_or_else(|| Error::new(Status::GenericFailure, "watcher is closed"))?
-            .refer(env)
+    pub fn refer(&self, env: Env) -> Result<()> {
+        #[expect(deprecated)]
+        {
+            self.callback
+                .lock()
+                .map_err(|_| Error::new(Status::GenericFailure, "callback lock poisoned"))?
+                .as_mut()
+                .ok_or_else(|| Error::new(Status::GenericFailure, "watcher is closed"))?
+                .refer(&env)
+        }
     }
 
     #[napi]
-    #[allow(deprecated)]
-    pub fn unref(&self, env: &Env) -> Result<()> {
-        self.callback
-            .lock()
-            .map_err(|_| Error::new(Status::GenericFailure, "callback lock poisoned"))?
-            .as_mut()
-            .ok_or_else(|| Error::new(Status::GenericFailure, "watcher is closed"))?
-            .unref(env)
+    pub fn unref(&self, env: Env) -> Result<()> {
+        #[expect(deprecated)]
+        {
+            self.callback
+                .lock()
+                .map_err(|_| Error::new(Status::GenericFailure, "callback lock poisoned"))?
+                .as_mut()
+                .ok_or_else(|| Error::new(Status::GenericFailure, "watcher is closed"))?
+                .unref(&env)
+        }
     }
 }
 
