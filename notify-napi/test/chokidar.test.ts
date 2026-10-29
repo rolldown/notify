@@ -116,7 +116,7 @@ test('watcher forwards polling options', async () => {
   writeFileSync(file, "export default 'before'\n")
   const watcher = watch(file, {
     usePolling: true,
-    interval: 25,
+    pollInterval: 25,
   })
   try {
     await once(watcher, 'ready')

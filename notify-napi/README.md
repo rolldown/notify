@@ -18,7 +18,7 @@ watcher.remove('/project')
 watcher.close()
 ```
 
-## Chokidar compatibility
+## Chokidar-like API
 
 The separate `@rolldown/notify/chokidar` entry point adapts the callback API to Chokidar's EventEmitter interface:
 

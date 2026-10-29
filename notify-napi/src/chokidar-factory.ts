@@ -8,10 +8,15 @@ import {
   type Ignored,
   type WatcherEvent,
   type WatchMatcher,
+  type WatcherOptions as BaseWatcherOptions,
 } from './factory.js'
 
 export type WatchEventName = 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir'
 export type { Ignored, WatchMatcher }
+
+export interface WatcherOptions extends BaseWatcherOptions {
+  ignorePermissionErrors?: boolean
+}
 
 export interface NativeWatchEvent {
   kind: string
@@ -20,34 +25,12 @@ export interface NativeWatchEvent {
   error?: string
 }
 
-export interface AwaitWriteFinishOptions {
-  stabilityThreshold?: number
-  pollInterval?: number
-}
-
-export interface WatchOptions {
-  ignored?: Ignored
-  followSymlinks?: boolean
-  cwd?: string
-  usePolling?: boolean
-  interval?: number
-  ignorePermissionErrors?: boolean
-  persistent?: boolean
-  disableGlobbing?: boolean
-  useFsEvents?: boolean
-  alwaysStat?: boolean
-  depth?: number
-  binaryInterval?: number
-  atomic?: boolean | number
-  awaitWriteFinish?: AwaitWriteFinishOptions | boolean
-}
-
 const toArray = <T>(value: T | ReadonlyArray<T>): T[] =>
   Array.isArray(value) ? [...value] : [value as T]
 const normalize = (value: string): string => value.replaceAll(sep, '/')
 
 export interface FSWatcher extends EventEmitter {
-  readonly options: WatchOptions
+  readonly options: WatcherOptions
   closed: boolean
   add(paths: string | ReadonlyArray<string>): this
   unwatch(paths: string | ReadonlyArray<string>): this
@@ -65,8 +48,8 @@ export interface FSWatcher extends EventEmitter {
 }
 
 export interface ChokidarApi {
-  FSWatcher: new (options?: WatchOptions) => FSWatcher
-  watch: (paths: string | ReadonlyArray<string>, options?: WatchOptions) => FSWatcher
+  FSWatcher: new (options?: WatcherOptions) => FSWatcher
+  watch: (paths: string | ReadonlyArray<string>, options?: WatcherOptions) => FSWatcher
 }
 
 /** Create the Chokidar-compatible API using an addon's native bindings. */
@@ -74,23 +57,22 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
   const { Watcher } = /* #__PURE__ */ createWatcherApi(binding)
 
   class FSWatcher extends EventEmitter {
-    readonly options: WatchOptions
+    readonly options: WatcherOptions
     closed = false
     private readonly cwd: string
     private readonly watcher: Watcher
 
-    constructor(options: WatchOptions = {}) {
+    constructor(options: WatcherOptions = {}) {
       super()
       this.options = options
       this.cwd = resolve(options.cwd ?? process.cwd())
       this.watcher = new Watcher((event) => this.handle(event), {
         usePolling: options.usePolling,
-        pollInterval: options.interval ?? 100,
+        pollInterval: options.pollInterval,
         followSymlinks: options.followSymlinks,
         ignored: options.ignored,
         cwd: this.cwd,
       })
-      if (options.persistent === false) this.watcher.unref()
 
       setImmediate(() => {
         if (!this.closed) this.emit('ready')
@@ -185,7 +167,7 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
 
   function watch(
     paths: string | ReadonlyArray<string>,
-    options?: WatchOptions,
+    options?: WatcherOptions,
   ): FSWatcher {
     const watcher = new FSWatcher(options)
     try {
