@@ -1,0 +1,19 @@
+notify-napi/src/chokidar-factory.ts
+  s_611cd264f3dcc4::t_fad73a38e9c04c 11,17-20,33,51-52,60,65,71,170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a5aa1d3d64b7c44799af6f6c097d93681567f65",
+  "prompts": {},
+  "sessions": {
+    "s_611cd264f3dcc4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a180c1-0ea8-7b63-b408-add71232c5f7",
+        "model": "unknown"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
