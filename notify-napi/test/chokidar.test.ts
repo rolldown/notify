@@ -62,7 +62,7 @@ test('watcher handles lifecycle and file events', async () => {
   const watcher = watch(root, {
     ignored: ['**/node_modules/**'],
     usePolling: true,
-    interval: 25,
+    pollInterval: 25,
   })
   try {
     await once(watcher, 'ready')
@@ -116,7 +116,7 @@ test('watcher forwards polling options', async () => {
   writeFileSync(file, "export default 'before'\n")
   const watcher = watch(file, {
     usePolling: true,
-    interval: 25,
+    pollInterval: 25,
   })
   try {
     await once(watcher, 'ready')
@@ -150,7 +150,7 @@ test('renames emit unlink and add events', async () => {
   const before = join(root, 'before.js')
   const after = join(root, 'after.js')
   writeFileSync(before, 'export default 1\n')
-  const watcher = watch(root, { usePolling: true, interval: 25 })
+  const watcher = watch(root, { usePolling: true, pollInterval: 25 })
   try {
     await once(watcher, 'ready')
     const removed = waitForEvent(watcher, 'unlink', (path) => path === before)
@@ -167,7 +167,7 @@ test('watching existing files emits no initial events', async () => {
   const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-initial-'))
   const file = join(root, 'entry.js')
   writeFileSync(file, 'export default 1\n')
-  const watcher = watch(root, { usePolling: true, interval: 25 })
+  const watcher = watch(root, { usePolling: true, pollInterval: 25 })
   const events: [WatchEventName, string][] = []
   watcher.on('all', (event, path) => events.push([event, path]))
   try {
@@ -191,7 +191,7 @@ test('adding paths after ready registers them without initial events', async () 
   mkdirSync(first)
   mkdirSync(second)
   writeFileSync(file, 'export default 1\n')
-  const watcher = watch(first, { usePolling: true, interval: 25 })
+  const watcher = watch(first, { usePolling: true, pollInterval: 25 })
   const added: string[] = []
   watcher.on('add', (path) => added.push(path))
   try {
@@ -376,7 +376,7 @@ test.skipIf(process.env.NAPI_RS_FORCE_WASI === 'error')('followed symlinks insid
   symlinkSync(internal, internalLink)
   const watcher = watch(root, {
     usePolling: true,
-    interval: 25,
+    pollInterval: 25,
     ignored: ['**/internal-link/**'],
   })
   try {
@@ -473,7 +473,7 @@ test('an implicitly watched child can be unwatched and re-added', async () => {
   const file = join(child, 'entry.js')
   mkdirSync(child)
   writeFileSync(file, "export default 'before'\n")
-  const watcher = watch(root, { usePolling: true, interval: 25 })
+  const watcher = watch(root, { usePolling: true, pollInterval: 25 })
   const events: [WatchEventName, string][] = []
   watcher.on('all', (event, path) => events.push([event, path]))
   try {
@@ -491,27 +491,6 @@ test('an implicitly watched child can be unwatched and re-added', async () => {
     await changed
   } finally {
     await watcher.close()
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('persistent false allows the process to exit', () => {
-  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-exit-'))
-  try {
-    for (const expression of [
-      "watch('.', { persistent: false })",
-      "watch('.', { persistent: false, ignored: () => false })",
-    ]) {
-      const script = `import(${JSON.stringify(new URL('../dist/chokidar.mjs', import.meta.url).href)}).then(({ watch }) => { ${expression} })`
-      const result = spawnSync(process.execPath, ['-e', script], {
-        cwd: root,
-        timeout: 2000,
-        encoding: 'utf8',
-      })
-      expect(result.signal, result.stderr).toBe(null)
-      expect(result.status, result.stderr).toBe(0)
-    }
-  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })

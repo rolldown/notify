@@ -10,12 +10,11 @@ export const FSWatcher: ChokidarApi['FSWatcher'] = /* #__PURE__ */ (() => chokid
 export const watch: ChokidarApi['watch'] = /* #__PURE__ */ (() => chokidar.watch)()
 export type FSWatcher = FSWatcherInstance
 export type {
-  AwaitWriteFinishOptions,
   Ignored,
   NativeWatchEvent,
   WatchEventName,
   WatchMatcher,
-  WatchOptions,
+  WatcherOptions,
 } from './chokidar-factory.js'
 
 export default chokidar
