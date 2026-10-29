@@ -1,0 +1,33 @@
+notify-napi/package.json
+  s_6d85853a5f0896::t_0bf0cea878da7f 41,50-51
+notify-napi/pnpm-lock.yaml
+  s_6d85853a5f0896::t_699fe88f7acdf7 178-180,188-190,915-917,2172-2173
+notify-napi/src/chokidar-factory.ts
+  s_30442c1d77155a::t_e9171f69e2d54b 2-6,22,35-62,96-98,119-151,157-168,175-176,193-195,203-288,326
+notify-napi/test/chokidar.test.ts
+  s_6d85853a5f0896::t_e6e57a670c7df1 132-321
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4c2f1160195a180decdc401ca5bc90778bea2b18",
+  "prompts": {},
+  "sessions": {
+    "s_30442c1d77155a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a186f1-a36d-7323-9c69-25b80ee53a49",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    },
+    "s_6d85853a5f0896": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a186d8-29d2-7050-a683-926a56c43f0e",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
