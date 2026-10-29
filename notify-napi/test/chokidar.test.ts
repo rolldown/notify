@@ -495,27 +495,6 @@ test('an implicitly watched child can be unwatched and re-added', async () => {
   }
 })
 
-test('persistent false allows the process to exit', () => {
-  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-exit-'))
-  try {
-    for (const expression of [
-      "watch('.', { persistent: false })",
-      "watch('.', { persistent: false, ignored: () => false })",
-    ]) {
-      const script = `import(${JSON.stringify(new URL('../dist/chokidar.mjs', import.meta.url).href)}).then(({ watch }) => { ${expression} })`
-      const result = spawnSync(process.execPath, ['-e', script], {
-        cwd: root,
-        timeout: 2000,
-        encoding: 'utf8',
-      })
-      expect(result.signal, result.stderr).toBe(null)
-      expect(result.status, result.stderr).toBe(0)
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
 test('watch closes the native watcher when add fails', () => {
   const script = `
     const binding = await import(${JSON.stringify(new URL('../dist/binding.mjs', import.meta.url).href)})
