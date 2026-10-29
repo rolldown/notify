@@ -9,7 +9,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [lib]
-name = "rolldown_notify"
+name = "notify_napi"
 crate-type = ["cdylib", "rlib"]
 
 [lints]
