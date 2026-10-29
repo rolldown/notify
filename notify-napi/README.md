@@ -30,7 +30,7 @@ watcher.on('change', (path) => console.log(path))
 await watcher.close()
 ```
 
-Watch paths are treated as literal paths rather than globs.
+Watch paths support Chokidar v3-style globs.
 
 Existing files do not emit initial events, and a directory event does not synthesize events for its descendants. Removed paths whose type is unavailable from the backend emit `unlink`.
 

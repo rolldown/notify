@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events'
-import { lstatSync, statSync, type Stats } from 'node:fs'
-import { relative, resolve, sep } from 'node:path'
+import { lstatSync, realpathSync, statSync, type Stats } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import picomatch from 'picomatch'
+import globParent from './glob/glob-parent.js'
+import isGlob from './glob/is-glob.js'
 import {
   createWatcherApi,
   type NotifyBindings,
@@ -16,6 +19,7 @@ export type { Ignored, WatchMatcher }
 
 export interface WatcherOptions extends BaseWatcherOptions {
   ignorePermissionErrors?: boolean
+  disableGlobbing?: boolean
 }
 
 export interface NativeWatchEvent {
@@ -28,6 +32,34 @@ export interface NativeWatchEvent {
 const toArray = <T>(value: T | ReadonlyArray<T>): T[] =>
   Array.isArray(value) ? [...value] : [value as T]
 const normalize = (value: string): string => value.replaceAll(sep, '/')
+const contains = (root: string, path: string): boolean => {
+  const local = relative(root, path)
+  return local === '' || (local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local))
+}
+
+interface WatchPath {
+  key: string
+  base: string
+  canonicalBase: string
+  root: string
+  glob?: (path: string) => boolean
+  recursive: boolean
+}
+
+function matches(path: string, spec: WatchPath, descendants = false): boolean {
+  for (const base of [spec.base, spec.canonicalBase]) {
+    if (!contains(base, path)) continue
+    const local = normalize(relative(base, path))
+    if (!spec.glob) return spec.recursive || descendants || local === ''
+    if (spec.glob(local)) return true
+    if (descendants) {
+      for (let parent = dirname(local); parent !== '.'; parent = dirname(parent)) {
+        if (spec.glob(normalize(parent))) return true
+      }
+    }
+  }
+  return false
+}
 
 export interface FSWatcher extends EventEmitter {
   readonly options: WatcherOptions
@@ -61,6 +93,9 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
     closed = false
     private readonly cwd: string
     private readonly watcher: Watcher
+    private readonly paths = new Map<string, WatchPath>()
+    private readonly excluded = new Map<string, WatchPath>()
+    private readonly roots = new Set<string>()
 
     constructor(options: WatcherOptions = {}) {
       super()
@@ -81,20 +116,64 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
 
     add(paths: string | ReadonlyArray<string>): this {
       if (this.closed) return this
-      this.watcher.add(toArray(paths).map((path) => this.absolute(path)))
+      const specs = toArray(paths).map((path) => {
+        const negative = path.startsWith('!')
+        return { negative, spec: this.watchPath(negative ? path.slice(1) : path) }
+      })
+      const previous = new Map(this.paths)
+      for (const { negative, spec } of specs) {
+        if (!negative) this.paths.set(spec.key, spec)
+      }
+      try {
+        this.syncRoots()
+      } catch (error) {
+        this.paths.clear()
+        for (const [key, spec] of previous) this.paths.set(key, spec)
+        try {
+          this.syncRoots()
+        } catch (restoreError) {
+          throw new AggregateError([error, restoreError], 'Could not restore previous watch roots')
+        }
+        throw error
+      }
+      for (const { negative, spec } of specs) {
+        if (negative) {
+          this.excluded.set(spec.key, spec)
+          continue
+        }
+        for (const [key, exclusion] of this.excluded) {
+          if (key === spec.key || (!exclusion.glob && (
+            contains(exclusion.base, spec.base) || contains(exclusion.canonicalBase, spec.canonicalBase)
+          ))) {
+            this.excluded.delete(key)
+          }
+        }
+      }
       return this
     }
 
     unwatch(paths: string | ReadonlyArray<string>): this {
       if (!this.closed) {
-        this.watcher.remove(toArray(paths).map((path) => this.absolute(path)))
+        for (const path of toArray(paths)) {
+          const spec = this.watchPath(path)
+          this.excluded.set(spec.key, spec)
+          for (const [key, watched] of this.paths) {
+            if (key === spec.key || (!spec.glob && (
+              contains(spec.base, watched.base) || contains(spec.canonicalBase, watched.canonicalBase)
+            ))) {
+              this.paths.delete(key)
+            }
+          }
+        }
+        this.syncRoots()
       }
       return this
     }
 
     /** Checks configured watch coverage; resolves paths against cwd. */
     isWatched(path: string): boolean {
-      return !this.closed && this.watcher.isWatched(this.absolute(path))
+      const absolute = this.absolute(path)
+      return !this.closed && this.includes(absolute) && this.watcher.isWatched(absolute)
     }
 
     ref(): this {
@@ -111,11 +190,100 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
       if (this.closed) return
       this.closed = true
       this.watcher.close()
+      this.paths.clear()
+      this.excluded.clear()
+      this.roots.clear()
       this.removeAllListeners()
     }
 
     private absolute(path: string): string {
       return resolve(this.cwd, path)
+    }
+
+    private watchPath(path: string): WatchPath {
+      // Detect globs before resolving so glob characters in cwd remain literal.
+      const pattern = normalize(path)
+      const hasGlob = !this.options.disableGlobbing && isGlob(pattern)
+      const parent = hasGlob ? globParent(pattern) : path
+      const base = this.absolute(parent)
+      // Parentheses and pipes stay literal when extglobs are disabled.
+      const glob = hasGlob
+        ? picomatch(
+          normalize(relative(parent, pattern)).replace(/\\.|[()|]/g, (part) =>
+            part.length === 1 ? `\\${part}` : part,
+          ),
+          { dot: true, noextglob: true, nonegate: true },
+        )
+        : undefined
+      let root = base
+      let canonicalBase = base
+      // Missing glob parents are observed through their nearest existing ancestor.
+      for (let ancestor = base; ; ancestor = dirname(ancestor)) {
+        try {
+          const canonical = realpathSync.native(ancestor)
+          canonicalBase = resolve(canonical, relative(ancestor, base))
+          if (glob) root = ancestor
+          if (this.options.followSymlinks !== false ||
+            (process.platform === 'darwin' && !this.options.usePolling &&
+              process.env.NAPI_RS_FORCE_WASI !== 'error')) {
+            root = glob ? canonical : canonicalBase
+          }
+          break
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if ((code !== 'ENOENT' && code !== 'ENOTDIR') || dirname(ancestor) === ancestor) break
+        }
+      }
+      return {
+        key: this.absolute(path),
+        base,
+        canonicalBase,
+        root,
+        glob,
+        recursive: !glob && statSync(base, { throwIfNoEntry: false })?.isDirectory() === true,
+      }
+    }
+
+    private syncRoots(): void {
+      const candidates = [...new Set([...this.paths.values()].map((spec) => spec.root))]
+      const roots = candidates.filter((root) => !candidates.some(
+        (other) => other !== root && contains(other, root),
+      ))
+      const removed: string[] = []
+      for (const root of this.roots) {
+        if (!roots.includes(root)) {
+          this.watcher.remove(root)
+          this.roots.delete(root)
+          removed.push(root)
+        }
+      }
+      for (const root of roots) {
+        if (!this.roots.has(root)) {
+          this.watcher.add(root)
+          this.roots.add(root)
+        }
+      }
+      // Native remove() leaves an exclusion. Clear it when a broader root
+      // replaces the removed root; add() reuses that broader native watch.
+      for (const root of removed) {
+        if (roots.some((parent) => contains(parent, root))) this.watcher.add(root)
+      }
+    }
+
+    private includes(path: string): boolean {
+      for (const spec of this.paths.values()) {
+        if (spec.base !== spec.canonicalBase && contains(spec.base, path)) {
+          path = resolve(spec.canonicalBase, relative(spec.base, path))
+          break
+        }
+      }
+      for (const spec of this.excluded.values()) {
+        if (matches(path, spec, true)) return false
+      }
+      for (const spec of this.paths.values()) {
+        if (matches(path, spec)) return true
+      }
+      return false
     }
 
     private display(path: string): string {
@@ -155,7 +323,7 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
         if (!this.ignoreError(error)) this.emit('error', error)
         return
       }
-      if (!event.path) return
+      if (!event.path || !this.includes(event.path)) return
       const stats = event.kind === 'unlink' || event.kind === 'unlinkDir'
         ? undefined
         : this.stats(event.path)

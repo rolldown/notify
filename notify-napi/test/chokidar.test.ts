@@ -129,6 +129,196 @@ test('watcher forwards polling options', async () => {
   }
 })
 
+for (const usePolling of [false, true]) {
+  test(`glob paths filter file events (polling: ${usePolling})`, async () => {
+    const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-glob-'))
+    const source = join(root, 'src')
+    mkdirSync(source)
+    mkdirSync(join(source, 'nested'))
+    mkdirSync(join(source, 'ignored'))
+    const entry = join(source, 'entry.js')
+    const renamed = join(source, 'nested', 'renamed.ts')
+    writeFileSync(entry, 'before')
+    const watcher = watch(['src/**/*.{js,ts}', '!src/**/skip*'], {
+      cwd: root,
+      usePolling,
+      pollInterval: 25,
+      ignored: '**/ignored/**',
+    })
+    const events: [WatchEventName, string][] = []
+    watcher.on('all', (event, path) => events.push([event, path]))
+    try {
+      await once(watcher, 'ready')
+      expect(events).toEqual([])
+      expect(watcher.isWatched('src/entry.js')).toBe(true)
+      expect(watcher.isWatched('src/nested/future.ts')).toBe(true)
+      expect(watcher.isWatched('src/.hidden.js')).toBe(true)
+      expect(watcher.isWatched('src/other.css')).toBe(false)
+      expect(watcher.isWatched('src/skip.js')).toBe(false)
+      expect(watcher.isWatched('src/ignored/entry.js')).toBe(false)
+      expect(watcher.isWatched('outside.js')).toBe(false)
+
+      const changed = waitForEvent(watcher, ['add', 'change'], (path) => path === 'src/entry.js')
+      writeFileSync(entry, 'after!')
+      await changed
+      const removed = usePolling
+        ? waitForEvent(watcher, 'unlink', (path) => path === 'src/entry.js')
+        : Promise.resolve()
+      const added = waitForEvent(watcher, 'add', (path) => path === 'src/nested/renamed.ts')
+      renameSync(entry, renamed)
+      await Promise.all([removed, added])
+      writeFileSync(join(source, 'other.css'), 'filtered')
+      writeFileSync(join(source, 'skip.js'), 'filtered')
+      writeFileSync(join(source, 'ignored', 'entry.js'), 'filtered')
+      const hidden = waitForEvent(watcher, 'add', (path) => path === 'src/.hidden.js')
+      writeFileSync(join(source, '.hidden.js'), 'visible')
+      await hidden
+      await delay(100)
+      expect(events.every(([, path]) => /\.(js|ts)$/.test(path) &&
+        !path.includes('skip') && !path.includes('ignored'))).toBe(true)
+    } finally {
+      await watcher.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('glob syntax, absolute paths, and cwd with glob characters', async () => {
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-[glob]-'))
+  mkdirSync(join(root, 'src'))
+  const watcher = watch(['src/{entry,other}[0-9].[jt]s', 'src/single?.js', 'src/{one/two,three}/*.js'], { cwd: root })
+  try {
+    await once(watcher, 'ready')
+    expect(watcher.isWatched('src/entry1.js')).toBe(true)
+    expect(watcher.isWatched('src/other2.ts')).toBe(true)
+    expect(watcher.isWatched('src/entry12.js')).toBe(false)
+    expect(watcher.isWatched('src/single1.js')).toBe(true)
+    expect(watcher.isWatched('src/single12.js')).toBe(false)
+    expect(watcher.isWatched('src/one/two/entry.js')).toBe(true)
+    expect(watcher.isWatched('src/one/entry.js')).toBe(false)
+    expect(watcher.isWatched('src/three/entry.js')).toBe(true)
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+
+  const absoluteRoot = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-absolute-glob-'))
+  const absolute = watch(join(absoluteRoot, '*.js'))
+  try {
+    await once(absolute, 'ready')
+    expect(absolute.isWatched(join(absoluteRoot, 'entry.js'))).toBe(true)
+    expect(absolute.isWatched(join(absoluteRoot, 'nested', 'entry.js'))).toBe(false)
+  } finally {
+    await absolute.close()
+    rmSync(absoluteRoot, { recursive: true, force: true })
+  }
+})
+
+for (const usePolling of [false, true]) {
+  test(`glob unwatch preserves overlapping roots and supports re-add (polling: ${usePolling})`, async () => {
+    const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-glob-unwatch-'))
+    mkdirSync(join(root, 'src'))
+    const watcher = watch(['**/*.js', 'src/*.{js,ts}'], { cwd: root, usePolling, pollInterval: 25 })
+    try {
+      await once(watcher, 'ready')
+      watcher.unwatch('**/*.js')
+      expect(watcher.isWatched('src/entry.js')).toBe(false)
+      expect(watcher.isWatched('src/entry.ts')).toBe(true)
+      expect(watcher.isWatched('elsewhere.ts')).toBe(false)
+      let added = waitForEvent(watcher, 'add', (path) => path === 'src/entry.ts')
+      writeFileSync(join(root, 'src', 'entry.ts'), 'one')
+      await added
+      watcher.add('**/*.js')
+      expect(watcher.isWatched('src/entry.js')).toBe(true)
+      watcher.unwatch('src')
+      expect(watcher.isWatched('src/entry.js')).toBe(false)
+      expect(watcher.isWatched('outside.js')).toBe(true)
+      watcher.add('src/deep/**/*.js')
+      expect(watcher.isWatched('src/entry.js')).toBe(true)
+      watcher.add('src')
+      watcher.unwatch('**/*.js')
+      expect(watcher.isWatched('src/entry.js')).toBe(false)
+      expect(watcher.isWatched('src/entry.css')).toBe(true)
+      added = waitForEvent(watcher, 'add', (path) => path === 'src/entry.css')
+      writeFileSync(join(root, 'src', 'entry.css'), 'visible')
+      await added
+      watcher.unwatch('src')
+      expect(watcher.isWatched('src/entry.css')).toBe(false)
+    } finally {
+      await watcher.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('glob parents created after ready are watched', async () => {
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-missing-glob-'))
+  const watcher = watch('future/nested/**/*.js', { cwd: root, usePolling: true, pollInterval: 25 })
+  try {
+    await once(watcher, 'ready')
+    expect(watcher.isWatched('future/nested/entry.js')).toBe(true)
+    expect(watcher.isWatched('outside.js')).toBe(false)
+    mkdirSync(join(root, 'future', 'nested'), { recursive: true })
+    const added = waitForEvent(watcher, 'add', (path) => path === 'future/nested/entry.js')
+    writeFileSync(join(root, 'future', 'nested', 'entry.js'), 'visible')
+    await added
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('disableGlobbing watches literal glob-like directories', async () => {
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-literal-glob-'))
+  mkdirSync(join(root, '[literal]'))
+  mkdirSync(join(root, 'l'))
+  const watcher = watch('[literal]', { cwd: root, disableGlobbing: true, usePolling: true, pollInterval: 25 })
+  try {
+    await once(watcher, 'ready')
+    expect(watcher.isWatched('[literal]/entry.js')).toBe(true)
+    expect(watcher.isWatched('l/entry.js')).toBe(false)
+    const added = waitForEvent(watcher, 'add', (path) => path === '[literal]/entry.js')
+    writeFileSync(join(root, '[literal]', 'entry.js'), 'visible')
+    await added
+    watcher.unwatch('[literal]')
+    expect(watcher.isWatched('[literal]/entry.js')).toBe(false)
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+for (const usePolling of [false, true]) {
+  test(`glob paths under symlinked roots match backend paths (polling: ${usePolling})`, async () => {
+    const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-glob-link-'))
+    const target = join(root, 'target')
+    const link = join(root, 'link')
+    mkdirSync(target)
+    symlinkSync(target, link)
+    const watcher = watch('link/**/*.js', { cwd: root, usePolling, pollInterval: 25 })
+    try {
+      await once(watcher, 'ready')
+      expect(watcher.isWatched('link/entry.js')).toBe(true)
+      expect(watcher.isWatched('target/entry.js')).toBe(true)
+      expect(watcher.isWatched('target/entry.css')).toBe(false)
+      const added = waitForEvent(watcher, 'add', (path) => path === 'target/entry.js')
+      writeFileSync(join(target, 'entry.js'), 'visible')
+      await added
+      watcher.unwatch('target/entry.js')
+      expect(watcher.isWatched('link/entry.js')).toBe(false)
+      expect(watcher.isWatched('target/entry.js')).toBe(false)
+      watcher.add('link/entry.js')
+      expect(watcher.isWatched('link/entry.js')).toBe(true)
+      expect(watcher.isWatched('target/entry.js')).toBe(true)
+      watcher.unwatch('target')
+      expect(watcher.isWatched('link/other.js')).toBe(false)
+    } finally {
+      await watcher.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
 test('polling reports changes using the default interval', async () => {
   const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-poll-default-'))
   const file = join(root, 'entry.js')

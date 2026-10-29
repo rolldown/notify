@@ -38,6 +38,7 @@
   "devDependencies": {
     "@napi-rs/cli": "^3.10.9",
     "@types/node": "^24.19.2",
+    "@types/picomatch": "^4.0.3",
     "emnapi": "2.0.0-alpha.4",
     "tsdown": "^0.23.1",
     "typescript": "^7.0.2",
@@ -46,7 +47,8 @@
   "dependencies": {
     "@emnapi/core": "2.0.0-alpha.4",
     "@emnapi/runtime": "2.0.0-alpha.4",
-    "@napi-rs/wasm-runtime": "~1.2.5"
+    "@napi-rs/wasm-runtime": "~1.2.5",
+    "picomatch": "^4.0.7"
   },
   "napi": {
     "binaryName": "rolldown_notify",
