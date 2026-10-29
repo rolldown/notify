@@ -1,6 +1,6 @@
 [package]
 name = "rolldown-notify-napi"
-version = "0.0.1"
+version = "0.0.2"
 description = "Node.js bindings for rolldown-notify"
 license = "MIT OR Apache-2.0"
 rust-version.workspace = true
