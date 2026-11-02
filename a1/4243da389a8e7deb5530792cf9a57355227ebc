@@ -1,0 +1,23 @@
+notify-napi/src/watcher.rs
+  s_9fc7510f0c7dcd::t_301cde052b8fe3 12,28,32-35,45-48,56-57,65-66,134,141-143,159,164-190,192-205,208,229,231-232,234,252-253,260-266,268,284,341-346,387,390,394-395,404-409
+notify-napi/test/callback-api.test.ts
+  s_9fc7510f0c7dcd::t_573bb1f62c7459 17-58,60-63,68-69,72-73,83-143,209-244
+notify-napi/src/factory.ts
+  s_9fc7510f0c7dcd::t_ac68759df0ed37 28-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a14243da389a8e7deb5530792cf9a57355227ebc",
+  "prompts": {},
+  "sessions": {
+    "s_9fc7510f0c7dcd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19be9-ce11-7950-aba0-0ec6fb0c8477",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
