@@ -6,7 +6,9 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -127,6 +129,90 @@ test('watcher forwards polling options', async () => {
     await watcher.close()
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('polling compares contents when modification times are unchanged', async () => {
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-contents-'))
+  const file = join(root, 'entry.js')
+  writeFileSync(file, 'before')
+  // A future, whole-second mtime keeps the write and restoration invisible to mtime-only polling.
+  const time = Math.floor(statSync(file).mtimeMs / 1000) + 60
+  utimesSync(file, time, time)
+  const watcher = watch(file, {
+    usePolling: true,
+    pollInterval: 25,
+    compareContentsForPolling: true,
+    useDebounce: false,
+  })
+  try {
+    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    writeFileSync(file, 'after!')
+    utimesSync(file, time, time)
+    await changed
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('native watching supports disabling debouncing', async () => {
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-no-debounce-'))
+  const file = join(root, 'entry.js')
+  writeFileSync(file, 'before')
+  const time = Math.floor(statSync(file).mtimeMs / 1000)
+  const watcher = watch(file, {
+    usePolling: false,
+    useDebounce: false,
+    // Debouncer settings are unused when debouncing is disabled.
+    debounceDelay: 10,
+    debounceTickRate: 20,
+  })
+  try {
+    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    writeFileSync(file, 'after')
+    utimesSync(file, time + 2, time + 2)
+    await changed
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('honors the configured debounce delay', async () => {
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'rolldown-notify-debounce-'))
+  const file = join(root, 'entry.js')
+  writeFileSync(file, 'before')
+  const time = Math.floor(statSync(file).mtimeMs / 1000)
+  let changedAt: number | undefined
+  const watcher = watch(file, {
+    usePolling: true,
+    pollInterval: 25,
+    useDebounce: true,
+    debounceDelay: 250,
+    debounceTickRate: 25,
+  }).on('change', (path) => {
+    if (path === file) changedAt ??= performance.now()
+  })
+  try {
+    const changed = waitForEvent(watcher, 'change', (path) => path === file)
+    const writtenAt = performance.now()
+    writeFileSync(file, 'after')
+    utimesSync(file, time + 2, time + 2)
+    await changed
+    expect(changedAt! - writtenAt).toBeGreaterThanOrEqual(250)
+  } finally {
+    await watcher.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('rejects a debounce tick longer than the delay', () => {
+  expect(() => new FSWatcher({
+    usePolling: true,
+    useDebounce: true,
+    debounceDelay: 10,
+    debounceTickRate: 20,
+  })).toThrow(/Invalid tick_rate/)
 })
 
 for (const usePolling of [false, true]) {

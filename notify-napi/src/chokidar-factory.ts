@@ -104,6 +104,11 @@ export function createChokidarApi(binding: NotifyBindings): ChokidarApi {
       this.watcher = new Watcher((event) => this.handle(event), {
         usePolling: options.usePolling,
         pollInterval: options.pollInterval,
+        compareContentsForPolling: options.compareContentsForPolling,
+        useDebounce: options.useDebounce,
+        debounceDelay: options.debounceDelay,
+        debounceTickRate: options.debounceTickRate,
+
         followSymlinks: options.followSymlinks,
         ignored: options.ignored,
         cwd: this.cwd,

@@ -25,6 +25,11 @@ export interface WatcherEvent {
 export interface WatcherOptions {
   usePolling?: boolean
   pollInterval?: number
+  compareContentsForPolling?: boolean
+  useDebounce?: boolean
+  debounceDelay?: number
+  debounceTickRate?: number
+
   followSymlinks?: boolean
   ignored?: Ignored
   cwd?: string
