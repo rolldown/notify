@@ -9,7 +9,7 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Status, bindgen_prelude::*};
 use napi_derive::napi;
 use notify::{
-    Config, Event, EventKind, PollWatcher, RecommendedWatcher, WatchMode,
+    Config, Event, EventKind, PollWatcher, RecommendedWatcher, WatchMode, Watcher as _,
     event::{CreateKind, ModifyKind, RemoveKind, RenameMode},
 };
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer_opt};
@@ -25,9 +25,14 @@ pub struct WatcherEvent {
 }
 
 #[napi(object)]
+#[derive(Default)]
 pub struct WatcherOptions {
     pub use_polling: Option<bool>,
     pub poll_interval: Option<u32>,
+    pub compare_contents_for_polling: Option<bool>,
+    pub use_debounce: Option<bool>,
+    pub debounce_delay: Option<u32>,
+    pub debounce_tick_rate: Option<u32>,
     pub follow_symlinks: Option<bool>,
     pub ignored: Option<Vec<String>>,
 }
@@ -37,8 +42,10 @@ type RecommendedDebouncer = Debouncer<RecommendedWatcher, RecommendedCache>;
 type PollDebouncer = Debouncer<PollWatcher, RecommendedCache>;
 
 enum Backend {
-    Recommended(RecommendedDebouncer),
-    Poll(PollDebouncer),
+    Recommended(RecommendedWatcher),
+    Poll(PollWatcher),
+    DebouncedRecommended(RecommendedDebouncer),
+    DebouncedPoll(PollDebouncer),
 }
 
 impl Backend {
@@ -46,6 +53,8 @@ impl Backend {
         match self {
             Self::Recommended(watcher) => watcher.watch(path, WatchMode::recursive()),
             Self::Poll(watcher) => watcher.watch(path, WatchMode::recursive()),
+            Self::DebouncedRecommended(watcher) => watcher.watch(path, WatchMode::recursive()),
+            Self::DebouncedPoll(watcher) => watcher.watch(path, WatchMode::recursive()),
         }
     }
 
@@ -53,6 +62,8 @@ impl Backend {
         match self {
             Self::Recommended(watcher) => watcher.unwatch(path),
             Self::Poll(watcher) => watcher.unwatch(path),
+            Self::DebouncedRecommended(watcher) => watcher.unwatch(path),
+            Self::DebouncedPoll(watcher) => watcher.unwatch(path),
         }
     }
 }
@@ -120,19 +131,16 @@ impl Watcher {
                 })
             })?;
         let callback = Arc::new(Mutex::new(Some(callback)));
-        let options = options.unwrap_or(WatcherOptions {
-            use_polling: None,
-            poll_interval: None,
-            follow_symlinks: None,
-            ignored: None,
-        });
+        let options = options.unwrap_or_default();
         let ignored = Arc::new(ignored_globs(
             options.ignored.as_deref().unwrap_or_default(),
         )?);
         let follow_symlinks = options.follow_symlinks.unwrap_or(true);
         let state = Arc::new(Mutex::new(WatchState::default()));
 
-        let mut config = Config::default().with_follow_symlinks(follow_symlinks);
+        let mut config = Config::default()
+            .with_follow_symlinks(follow_symlinks)
+            .with_compare_contents(options.compare_contents_for_polling.unwrap_or(false));
         if let Some(interval) = options.poll_interval {
             config = config.with_poll_interval(Duration::from_millis(u64::from(interval)));
         }
@@ -141,7 +149,6 @@ impl Watcher {
             config = config.with_ignored(move |path, _kind| ignored.is_match(path));
         }
 
-        let timeout = Duration::from_millis(5);
         let use_polling = options.use_polling.unwrap_or(false) || cfg!(target_family = "wasm");
         let canonicalize_paths = follow_symlinks
             || (!use_polling
@@ -149,32 +156,56 @@ impl Watcher {
         if use_polling && options.poll_interval.is_none() {
             config = config.with_poll_interval(Duration::from_millis(100));
         }
-        let handler = event_handler(
+        let mut handler = event_handler(
             Arc::clone(&state),
             Arc::clone(&callback),
             Arc::clone(&ignored),
         );
-        let backend = if use_polling {
-            Backend::Poll(
-                new_debouncer_opt::<_, PollWatcher, RecommendedCache>(
-                    timeout,
-                    None,
-                    handler,
-                    RecommendedCache::new(),
-                    config,
+        let backend = if options.use_debounce.unwrap_or(true) {
+            let timeout = Duration::from_millis(u64::from(options.debounce_delay.unwrap_or(5)));
+            let tick_rate = options
+                .debounce_tick_rate
+                .map(|rate| Duration::from_millis(u64::from(rate)));
+            let handler = move |result: DebounceEventResult| match result {
+                Ok(events) => {
+                    for event in events {
+                        handler(Ok(event.event));
+                    }
+                }
+                Err(errors) => {
+                    for error in errors {
+                        handler(Err(error));
+                    }
+                }
+            };
+            if use_polling {
+                Backend::DebouncedPoll(
+                    new_debouncer_opt::<_, PollWatcher, RecommendedCache>(
+                        timeout,
+                        tick_rate,
+                        handler,
+                        RecommendedCache::new(),
+                        config,
+                    )
+                    .map_err(|error| notify_error(&error))?,
                 )
-                .map_err(|error| notify_error(&error))?,
-            )
+            } else {
+                Backend::DebouncedRecommended(
+                    new_debouncer_opt::<_, RecommendedWatcher, RecommendedCache>(
+                        timeout,
+                        tick_rate,
+                        handler,
+                        RecommendedCache::new(),
+                        config,
+                    )
+                    .map_err(|error| notify_error(&error))?,
+                )
+            }
+        } else if use_polling {
+            Backend::Poll(PollWatcher::new(handler, config).map_err(|error| notify_error(&error))?)
         } else {
             Backend::Recommended(
-                new_debouncer_opt::<_, RecommendedWatcher, RecommendedCache>(
-                    timeout,
-                    None,
-                    handler,
-                    RecommendedCache::new(),
-                    config,
-                )
-                .map_err(|error| notify_error(&error))?,
+                RecommendedWatcher::new(handler, config).map_err(|error| notify_error(&error))?,
             )
         };
 
@@ -195,12 +226,12 @@ impl Watcher {
             .ok_or_else(|| Error::new(Status::GenericFailure, "watcher is closed"))?;
         for path in paths {
             let path = self.normalize_path(&path)?;
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::new(Status::GenericFailure, "watch state lock poisoned"))?;
+            let mut state = self.lock_state()?;
             if !state.roots.keys().any(|root| path.starts_with(root)) {
+                // Registration can wait for a backend thread that reads the watch state.
+                drop(state);
                 backend.watch(&path).map_err(|error| notify_error(&error))?;
+                state = self.lock_state()?;
                 state.roots.insert(path.clone(), path.is_dir());
             }
             state
@@ -218,23 +249,23 @@ impl Watcher {
             .ok_or_else(|| Error::new(Status::GenericFailure, "watcher is closed"))?;
         for path in paths {
             let path = self.normalize_path(&path)?;
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| Error::new(Status::GenericFailure, "watch state lock poisoned"))?;
-            let roots = state
+            let roots = self
+                .lock_state()?
                 .roots
                 .keys()
                 .filter(|root| root.starts_with(&path))
                 .cloned()
                 .collect::<Vec<_>>();
             for root in roots {
-                backend
-                    .unwatch(&root)
-                    .map_err(|error| notify_error(&error))?;
-                state.roots.remove(&root);
+                let is_dir = self.lock_state()?.roots.remove(&root);
+                if let Err(error) = backend.unwatch(&root) {
+                    if let Some(is_dir) = is_dir {
+                        self.lock_state()?.roots.insert(root, is_dir);
+                    }
+                    return Err(notify_error(&error));
+                }
             }
-            state.excluded.insert(path);
+            self.lock_state()?.excluded.insert(path);
         }
         Ok(())
     }
@@ -250,10 +281,7 @@ impl Watcher {
         }
         let absolute = absolute_path(&path)?;
         let canonical = self.normalize_path(&path)?;
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| Error::new(Status::GenericFailure, "watch state lock poisoned"))?;
+        let state = self.lock_state()?;
         // Polling reports followed links beneath a directory root under their
         // alias. A symlink supplied as a root uses its canonical path instead.
         let path = if state.root_for(&absolute).is_some() {
@@ -310,6 +338,12 @@ impl Watcher {
 }
 
 impl Watcher {
+    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, WatchState>> {
+        self.state
+            .lock()
+            .map_err(|_| Error::new(Status::GenericFailure, "watch state lock poisoned"))
+    }
+
     fn lock_backend(&self) -> Result<std::sync::MutexGuard<'_, Option<Backend>>> {
         self.inner
             .lock()
@@ -350,16 +384,15 @@ fn event_handler(
     state: Arc<Mutex<WatchState>>,
     callback: Arc<Mutex<Option<WatcherCallback>>>,
     ignored: Arc<IgnoredGlobs>,
-) -> impl FnMut(DebounceEventResult) + Send + 'static {
+) -> impl FnMut(notify::Result<Event>) + Send + 'static {
     move |result| {
         let output = match result {
-            Ok(events) => {
+            Ok(event) => {
                 let Ok(state) = state.lock() else {
                     return;
                 };
-                events
-                    .iter()
-                    .flat_map(|event| translate_event(event))
+                translate_event(&event)
+                    .into_iter()
                     .filter(|event| {
                         event
                             .path
@@ -368,15 +401,12 @@ fn event_handler(
                     })
                     .collect::<Vec<_>>()
             }
-            Err(errors) => errors
-                .into_iter()
-                .map(|error| WatcherEvent {
-                    kind: "error".to_string(),
-                    path: error.paths.first().map(path_string),
-                    is_dir: None,
-                    error: Some(error.to_string()),
-                })
-                .collect(),
+            Err(error) => vec![WatcherEvent {
+                kind: "error".to_string(),
+                path: error.paths.first().map(path_string),
+                is_dir: None,
+                error: Some(error.to_string()),
+            }],
         };
         let Ok(callback) = callback.lock() else {
             return;
