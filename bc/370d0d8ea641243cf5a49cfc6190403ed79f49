@@ -1,0 +1,19 @@
+notify-napi/package.json
+  s_27444d23d9a1fc::t_b175086100f3e2 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bc370d0d8ea641243cf5a49cfc6190403ed79f49",
+  "prompts": {},
+  "sessions": {
+    "s_27444d23d9a1fc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19b96-c3a3-7c61-96e2-a20de50f78cd",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "sapphi-red <green@sapphi.red>"
+    }
+  }
+}
