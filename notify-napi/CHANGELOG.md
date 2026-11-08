@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/rolldown/notify/compare/rolldown-notify-napi-v0.0.3...rolldown-notify-napi-v0.0.4) - 2026-11-08
+
+### Other
+
+- *(deps)* update dependency tsdown to v0.23.7 ([#163](https://github.com/rolldown/notify/pull/163))
+- *(deps)* update dependency @napi-rs/wasm-runtime to v1.2.6 ([#155](https://github.com/rolldown/notify/pull/155))
+- *(deps)* update dependency @napi-rs/cli to v3.10.12 ([#161](https://github.com/rolldown/notify/pull/161))
+- *(deps)* update dependency tsdown to v0.23.5 ([#159](https://github.com/rolldown/notify/pull/159))
+- *(deps)* update rust crate napi to v3.16.1 ([#154](https://github.com/rolldown/notify/pull/154))
+
 ## [0.0.3](https://github.com/rolldown/notify/compare/rolldown-notify-napi-v0.0.2...rolldown-notify-napi-v0.0.3) - 2026-11-02
 
 ### Added
