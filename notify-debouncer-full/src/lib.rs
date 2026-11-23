@@ -397,7 +397,23 @@ impl<T: Watcher, C: FileIdCache> Debouncer<T, C> {
             .roots
             .binary_search_by(|(p, _)| p.as_path().cmp(path.as_path()))
         {
-            Ok(_) => return, // already registered
+            Ok(pos) => {
+                // upgrade the stored mode like `WatchMode::upgrade_with`:
+                // `Recursive` wins over `NonRecursive`, `TrackPath` over `NoTrack`
+                let mut upgraded = data.roots[pos].1;
+                if watch_mode.recursive_mode == RecursiveMode::Recursive {
+                    upgraded.recursive_mode = RecursiveMode::Recursive;
+                }
+                if watch_mode.target_mode == TargetMode::TrackPath {
+                    upgraded.target_mode = TargetMode::TrackPath;
+                }
+                if upgraded == data.roots[pos].1 {
+                    return; // already registered
+                }
+                data.roots[pos].1 = upgraded;
+                data.cache.add_path(&path, upgraded);
+                return;
+            }
             Err(pos) => {
                 // `VecDeque::insert` is O(min(pos, len - pos))
                 data.roots.insert(pos, (path.clone(), watch_mode));
@@ -648,6 +664,54 @@ mod tests {
         debouncer.watch(src, WatchMode::recursive()).unwrap();
 
         assert_eq!(*added.lock().unwrap(), [src]);
+        assert_eq!(
+            debouncer.data.lock().unwrap().roots,
+            [(src.to_path_buf(), WatchMode::recursive())]
+        );
+    }
+
+    #[test]
+    fn watching_a_root_again_upgrades_its_mode() {
+        // a cache that records the watch modes it is asked to add
+        struct Cache(Arc<Mutex<Vec<(PathBuf, WatchMode)>>>);
+
+        impl FileIdCache for Cache {
+            fn cached_file_id(&self, _path: &Path) -> Option<impl AsRef<FileId>> {
+                Option::<&FileId>::None
+            }
+
+            fn add_path(&mut self, path: &Path, watch_mode: WatchMode) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((path.to_path_buf(), watch_mode));
+            }
+
+            fn remove_path(&mut self, _path: &Path) {}
+        }
+
+        let added = Arc::default();
+        let mut debouncer = new_debouncer_opt::<_, notify::NullWatcher, _>(
+            Duration::from_millis(10),
+            None,
+            |_: DebounceEventResult| {},
+            Cache(Arc::clone(&added)),
+            notify::Config::default(),
+        )
+        .unwrap();
+
+        let src = Path::new("/project/src");
+        debouncer.watch(src, WatchMode::non_recursive()).unwrap();
+        debouncer.watch(src, WatchMode::recursive()).unwrap();
+        debouncer.watch(src, WatchMode::non_recursive()).unwrap();
+
+        assert_eq!(
+            *added.lock().unwrap(),
+            [
+                (src.to_path_buf(), WatchMode::non_recursive()),
+                (src.to_path_buf(), WatchMode::recursive())
+            ]
+        );
         assert_eq!(
             debouncer.data.lock().unwrap().roots,
             [(src.to_path_buf(), WatchMode::recursive())]
